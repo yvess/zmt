@@ -3,15 +3,48 @@
 
 import argparse
 import subprocess
+import configparser
+from datetime import datetime
 
 
 class ZfsTools:
-    def __init__(self, args):
+    def __init__(self, args, config):
         self.args = args
+        self.config = config
 
     def autosnap(self):
+        running_vms = subprocess.check_output(
+            "virsh list --name",
+            universal_newlines=True, shell=True
+        ).splitlines()
+        running_vms = [vm for vm in running_vms if vm]
+        for vm in running_vms:
+            now = datetime.now()
+            snap = {
+                'main': self.config['vm']['main'],
+                'vm': vm,
+                'name': "autosnap-%s" % now.strftime("%Y-%m-%d_%H:%M:%S"),
+                'host_mirror': self.config['vm']['host_mirror']
+            }
+            # create local snapshot
+            subprocess.check_call(
+                "zfs snap -r {main}/{vm}@{name}".format(**snap),
+                universal_newlines=True, shell=True
+            )
+            # check if host mirror is reachable
+            subprocess.check_output(
+                "ping -O -c 2 -W 2 {host_mirror}".format(**snap),
+                universal_newlines=True, shell=True
+            )
+            # send it to host mirror
+            subprocess.check_call(
+                'zfs send {main}/{vm}@{name} | ssh root@{host_mirror} "zfs recv {main}/{vm}"'.format(**snap),
+                universal_newlines=True, shell=True
+            )
+            with open("/var/lib/zmt/autosnap/%s" % snap['vm'], "w+") as last_autosnap:
+                last_autosnap.write(snap['name'])
         snaps = subprocess.check_output(
-            "zfs list -H -S creation -r -o name,creation -t snap tank",
+            "zfs list -H -S creation -r -o name,creation -t snap tank/vm",
             universal_newlines=True, shell=True
         )
         print(snaps)
