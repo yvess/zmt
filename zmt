@@ -33,13 +33,15 @@ class ZfsParser:
             help='avaiable commands')
         self.parser_autosnap(self.subparsers)
         self.parser_backup(self.subparsers)
+        self.config = configparser.ConfigParser()
+        self.config.read('/etc/zmt/zmt.ini')
 
     def run(self):
         args = self.parser.parse_args()
         if not hasattr(args, 'command'):
             self.parser.print_help()
             exit()
-        zfstools = ZfsTools(args)
+        zfstools = ZfsTools(args, self.config)
 
         if hasattr(zfstools, args.command):
             getattr(zfstools, args.command)()
