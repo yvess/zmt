@@ -112,7 +112,7 @@ class ZfsTools:
             backup_done = False
             for snap_name in backup_snap_names:
                 last_inc = snap_conf['inc']
-                if last_inc and not last_inc.split('@')[1] in snap_name:
+                if (last_inc and not last_inc.split('@')[1] in snap_name) or (not last_inc):
                     cmd = 'zfs send -R {last_inc} {snap_name} | zfs recv -Fu {backup}/{vm}'.format(
                         last_inc=last_inc, snap_name=snap_name, **snap_conf
                     )
