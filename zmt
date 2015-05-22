@@ -45,56 +45,65 @@ class ZfsTools:
             print('No vms running')
         if not os.path.exists('/var/lib/zmt/autosnap/'):
             os.makedirs('/var/lib/zmt/autosnap/')
-        for vm in self.running_vms:
-            now = datetime.now()
-            snap_conf = {
-                'main': self.config['vm']['main'],
-                'vm': vm,
-                'name': 'autosnap-%s' % now.strftime('%Y-%m-%d_%H:%M:%S'),
-                'host_mirror': self.config['vm']['host_mirror'],
-            }
+        now = datetime.now()
+        now_string = now.strftime('%Y-%m-%d_%H:%M:%S')
+
+        # metadata for the snapshot
+        snap_conf = {
+            'main': self.config['vm']['main'],
+            'name': 'autosnap-%s' % now_string,
+            'host_mirror': self.config['vm']['host_mirror'],
+        }
+
+        # create the local snapshots
+        for fs in self.running_vms:
             snap_conf['inc'] = self._get_inc_from_file(
-                'autosnap/%s' % snap_conf['vm'], inc_as_stream=True
+                'autosnap/%s' % fs, inc_as_stream=True
             )
 
-            # create local snapshot
-            cmd = 'zfs snap -r {main}/{vm}@{name}'.format(**snap_conf)
+            # snap it
+            cmd = 'zfs snap -r {main}/{fs}@{name}'.format(fs=fs, **snap_conf)
             subprocess.check_call(cmd, universal_newlines=True, shell=True)
 
-            # check if host mirror is reachable
-            cmd = 'ping -O -c 1 {host_mirror}'.format(**snap_conf)
-            ping_exitcode, ping_output = subprocess.getstatusoutput(cmd)
+        # check if host mirror is reachable
+        cmd = 'ping -O -c 1 {host_mirror}'.format(**snap_conf)
+        ping_exitcode, ping_output = subprocess.getstatusoutput(cmd)
 
-            if ping_exitcode == 0:
-                # send it to host mirror
-                cmd = 'zfs send -R {inc} {main}/{vm}@{name} | ssh {host_mirror} "zfs recv {main}/{vm}"'.format(**snap_conf)
+        if ping_exitcode == 0:
+            # send all snapshots over ssh to the host_mirror
+            for fs in self.running_vms:
+                # send fs to host mirror
+                cmd = 'zfs send -R {inc} {main}/{fs}@{name} | ssh {host_mirror} "zfs recv {main}/{fs}"'.format(fs=fs, **snap_conf)
                 subprocess.check_output(
                     cmd, universal_newlines=True, shell=True
                 )
 
                 # write last autosnap
                 self._write_snap_file(
-                    'autosnap/%s' % snap_conf['vm'], snap_conf['name']
+                    'autosnap/%s' % fs, snap_conf['name']
                 )
-
-            else:
-                print("Mirror host is down, trying it next time")
+        else:
+            print("Mirror host is down, trying it next time")
 
     def backup(self):
         if not os.path.exists('/var/lib/zmt/backup/'):
             os.makedirs('/var/lib/zmt/backup/')
-        for vm in self.config['vm']['managed'].split(','):
-            vm = vm.strip()
-            snap_conf = {
-                'main': self.config['vm']['main'],
-                'backup': self.config['vm']['backup'],
-                'vm': vm
-            }
+
+        # metadata for the snapshot
+        snap_conf = {
+            'main': self.config['vm']['main'],
+            'backup': self.config['vm']['backup']
+        }
+
+        # proccess all managed vms from zmt.ini
+        for fs in self.config['vm']['managed'].split(','):
+            fs = fs.strip()
             snap_conf['inc'] = self._get_inc_from_file(
-                'backup/%s' % snap_conf['vm'], inc_as_stream=False
+                'backup/%s' % fs, inc_as_stream=False
             )
 
-            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {main}/{vm}'.format(**snap_conf)
+            # get all snapshots from tank
+            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {main}/{fs}'.format(fs=fs, **snap_conf)
             snap_names = subprocess.check_output(
                 cmd, universal_newlines=True, shell=True
             ).splitlines()
@@ -110,11 +119,14 @@ class ZfsTools:
 
             last_inc = snap_conf['inc']
             backup_done = False
+
+            # send the only the newest snapshot from tank to backup
             for snap_name in backup_snap_names:
                 last_inc = snap_conf['inc']
                 if (last_inc and not last_inc.split('@')[1] in snap_name) or (not last_inc):
-                    cmd = 'zfs send -R {last_inc} {snap_name} | zfs recv -Fu {backup}/{vm}'.format(
-                        last_inc=last_inc, snap_name=snap_name, **snap_conf
+                    cmd = 'zfs send -R {last_inc} {snap_name} | zfs recv -Fu {backup}/{fs}'.format(
+                        fs=fs, last_inc=last_inc,
+                        snap_name=snap_name, **snap_conf
                     )
                     subprocess.check_output(
                         cmd, universal_newlines=True, shell=True
@@ -127,22 +139,22 @@ class ZfsTools:
             if backup_done:
                 # write last backupsnap
                 self._write_snap_file(
-                    'backup/%s' % snap_conf['vm'],
+                    'backup/%s' % fs,
                     self._get_snap_name(backup_snap_names[-1])
                 )
 
                 # fix mountpoints
-                cmd = 'zfs set mountpoint=/{backup}/{vm} {backup}/{vm}'.format(**snap_conf)
+                cmd = 'zfs set mountpoint=/{backup}/{fs} {backup}/{fs}'.format(fs=fs, **snap_conf)
                 subprocess.check_output(
                     cmd, universal_newlines=True, shell=True
                 )
 
     def cleanup(self):
         autosnap_keep = int(self.config['autosnap']['keep'])
-        for vm in self.config['vm']['managed'].split(','):
-            vm = vm.strip()
-            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {main}/{vm} | grep "@autosnap-"'.format(
-                main=self.config['vm']['main'], vm=vm
+        for fs in self.config['vm']['managed'].split(','):
+            fs = fs.strip()
+            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {main}/{fs} | grep "@autosnap-"'.format(
+                main=self.config['vm']['main'], fs=fs
             )
             snaps = subprocess.check_output(
                 cmd, universal_newlines=True, shell=True
