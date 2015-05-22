@@ -57,10 +57,6 @@ class ZfsTools:
 
         # create the local snapshots
         for fs in self.running_vms:
-            snap_conf['inc'] = self._get_inc_from_file(
-                'autosnap/%s' % fs, inc_as_stream=True
-            )
-
             # snap it
             cmd = 'zfs snap -r {main}/{fs}@{name}'.format(fs=fs, **snap_conf)
             subprocess.check_call(cmd, universal_newlines=True, shell=True)
@@ -72,8 +68,11 @@ class ZfsTools:
         if ping_exitcode == 0:
             # send all snapshots over ssh to the host_mirror
             for fs in self.running_vms:
+                last_inc = self._get_inc_from_file(
+                    'autosnap/%s' % fs, inc_as_stream=True
+                )
                 # send fs to host mirror
-                cmd = 'zfs send -R {inc} {main}/{fs}@{name} | ssh {host_mirror} "zfs recv {main}/{fs}"'.format(fs=fs, **snap_conf)
+                cmd = 'zfs send -R {inc} {main}/{fs}@{name} | ssh {host_mirror} "zfs recv {main}/{fs}"'.format(fs=fs, inc=last_inc, **snap_conf)
                 subprocess.check_output(
                     cmd, universal_newlines=True, shell=True
                 )
@@ -98,12 +97,12 @@ class ZfsTools:
         # proccess all managed vms from zmt.ini
         for fs in self.config['vm']['managed'].split(','):
             fs = fs.strip()
-            snap_conf['inc'] = self._get_inc_from_file(
+            last_inc = self._get_inc_from_file(
                 'backup/%s' % fs, inc_as_stream=False
             )
 
             # get all snapshots from tank
-            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {main}/{fs}'.format(fs=fs, **snap_conf)
+            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {main}/{fs}'.format(fs=fs, inc=last_inc, **snap_conf)
             snap_names = subprocess.check_output(
                 cmd, universal_newlines=True, shell=True
             ).splitlines()
@@ -116,13 +115,10 @@ class ZfsTools:
                 else:
                     backup_snap_names.append(snap_name)
             backup_snap_names.reverse()
-
-            last_inc = snap_conf['inc']
             backup_done = False
 
             # send the only the newest snapshot from tank to backup
             for snap_name in backup_snap_names:
-                last_inc = snap_conf['inc']
                 if (last_inc and not last_inc.split('@')[1] in snap_name) or (not last_inc):
                     cmd = 'zfs send -R {last_inc} {snap_name} | zfs recv -Fu {backup}/{fs}'.format(
                         fs=fs, last_inc=last_inc,
