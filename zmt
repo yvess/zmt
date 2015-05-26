@@ -32,6 +32,20 @@ class ZfsTools:
                 inc = ('-I @%s' if inc_as_stream else '-i @%s') % last_snap
         return inc
 
+    def _get_last_snap_from_zfs(self, fs):
+        # get all snapshots from tank
+        cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {main}/{fs}'.format(
+            fs=fs, main=self.config['vm']['main']
+        )
+        snap_names = subprocess.check_output(
+            cmd, universal_newlines=True, shell=True
+        ).splitlines()
+        if snap_names[0] and '@autosnap-' in snap_names[0]:
+            return ''.join(snap_names[0].partition("@autosnap-")[1:])[1:]
+        else:
+            print("the last snapshot needs to be a autosnap snapshot from zmt")
+            exit(1)
+
     def _write_snap_file(self, snap_fname, snap_name):
         snap_fname = '/var/lib/zmt/%s' % snap_fname
         with open(snap_fname, 'w') as last_snap:
@@ -89,6 +103,18 @@ class ZfsTools:
                 )
         else:
             print("Mirror host is down, trying it next time")
+
+    def moved(self):
+        if not self.args.vm:
+            print('No vm specified')
+            exit(0)
+        else:
+            fs = self.args.vm[0]
+
+        # write last autosnap from last zfs snaphost
+        self._write_snap_file(
+            'autosnap/%s' % fs, self._get_last_snap_from_zfs(fs)
+        )
 
     def backup(self):
         if not os.path.exists('/var/lib/zmt/backup/'):
@@ -175,6 +201,7 @@ class ZfsParser:
         self.subparsers = self.parser.add_subparsers(
             help='avaiable commands')
         self.parser_autosnap(self.subparsers)
+        self.parser_moved(self.subparsers)
         self.parser_backup(self.subparsers)
         self.parser_cleanup(self.subparsers)
         self.config = configparser.ConfigParser()
@@ -200,6 +227,14 @@ class ZfsParser:
         parser_autosnap.add_argument('-v', help='verbose')
         parser_autosnap.add_argument('vm', nargs='?', default=None)
         parser_autosnap.set_defaults(command='autosnap')
+
+    def parser_moved(self, subparsers):
+        parser_moved = self.subparsers.add_parser(
+            'moved',
+            help='set autosnap file to last snapshot'
+        )
+        parser_moved.add_argument('vm', nargs=1)
+        parser_moved.set_defaults(command='moved')
 
     def parser_backup(self, subparsers):
         parser_backup = self.subparsers.add_parser(
