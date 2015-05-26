@@ -157,7 +157,7 @@ class ZfsTools:
             ).splitlines()
             if len(snaps) > autosnap_keep:
                 for snap in snaps[autosnap_keep:]:
-                    cmd = 'zfs destroy %s' % snap
+                    cmd = 'zfs destroy -r %s' % snap
                     snap_exitcode, snap_output = subprocess.getstatusoutput(cmd)
 
 
