@@ -41,8 +41,14 @@ class ZfsTools:
         return fq_snap_name.split('@')[1]
 
     def autosnap(self):
-        if not self.running_vms:
-            print('No vms running')
+        if not self.running_vms and not self.args.vm:
+            print('No vms running and no vm specified')
+            exit(0)
+
+        if self.args.vm:
+            fs_to_snap = [self.args.vm]
+        else:
+            fs_to_snap = self.running_vms
         if not os.path.exists('/var/lib/zmt/autosnap/'):
             os.makedirs('/var/lib/zmt/autosnap/')
         now = datetime.now()
@@ -56,7 +62,7 @@ class ZfsTools:
         }
 
         # create the local snapshots
-        for fs in self.running_vms:
+        for fs in fs_to_snap:
             # snap it
             cmd = 'zfs snap -r {main}/{fs}@{name}'.format(fs=fs, **snap_conf)
             subprocess.check_call(cmd, universal_newlines=True, shell=True)
@@ -67,7 +73,7 @@ class ZfsTools:
 
         if ping_exitcode == 0:
             # send all snapshots over ssh to the host_mirror
-            for fs in self.running_vms:
+            for fs in fs_to_snap:
                 last_inc = self._get_inc_from_file(
                     'autosnap/%s' % fs, inc_as_stream=True
                 )
@@ -192,6 +198,7 @@ class ZfsParser:
             help='create a snapshot'
         )
         parser_autosnap.add_argument('-v', help='verbose')
+        parser_autosnap.add_argument('vm', nargs='?', default=None)
         parser_autosnap.set_defaults(command='autosnap')
 
     def parser_backup(self, subparsers):
