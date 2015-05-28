@@ -7,6 +7,8 @@ import configparser
 import os
 from datetime import datetime
 
+AUTOSNAP_DATESTR = '%Y-%m-%d_%H:%M:%S'
+
 
 class ZfsTools:
     def __init__(self, args, config):
@@ -34,8 +36,8 @@ class ZfsTools:
 
     def _get_last_snap_from_zfs(self, fs):
         # get all snapshots from tank
-        cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {main}/{fs}'.format(
-            fs=fs, main=self.config['vm']['main']
+        cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs}/{fs}'.format(
+            fs=fs, zfs=self.config['vm']['zfs']
         )
         snap_names = subprocess.check_output(
             cmd, universal_newlines=True, shell=True
@@ -74,12 +76,11 @@ class ZfsTools:
             fs_to_snap = self.running_vms
         if not os.path.exists('/var/lib/zmt/autosnap/'):
             os.makedirs('/var/lib/zmt/autosnap/')
-        now = datetime.now()
-        now_string = now.strftime('%Y-%m-%d_%H:%M:%S')
+        now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
 
         # metadata for the snapshot
         snap_conf = {
-            'main': self.config['vm']['main'],
+            'zfs': self.config['vm']['zfs'],
             'name': 'autosnap-%s' % now_string,
             'host_mirror': self.config['vm']['host_mirror'],
         }
@@ -87,7 +88,7 @@ class ZfsTools:
         # create the local snapshots
         for fs in fs_to_snap:
             # snap it
-            cmd = 'zfs snap -r {main}/{fs}@{name}'.format(fs=fs, **snap_conf)
+            cmd = 'zfs snap -r {zfs}/{fs}@{name}'.format(fs=fs, **snap_conf)
             subprocess.check_call(cmd, universal_newlines=True, shell=True)
 
         if self._host_is_up(snap_conf['host_mirror']):
@@ -97,7 +98,7 @@ class ZfsTools:
                     'autosnap/%s' % fs, inc_as_stream=True
                 )
                 # send fs to host mirror
-                cmd = 'zfs send -R {inc} {main}/{fs}@{name} | ssh {host_mirror} "zfs recv {main}/{fs}"'.format(fs=fs, inc=last_inc, **snap_conf)
+                cmd = 'zfs send -R {inc} {zfs}/{fs}@{name} | ssh {host_mirror} "zfs recv {zfs}/{fs}"'.format(fs=fs, inc=last_inc, **snap_conf)
                 subprocess.check_output(
                     cmd, universal_newlines=True, shell=True
                 )
@@ -127,7 +128,7 @@ class ZfsTools:
 
         # metadata for the snapshot
         snap_conf = {
-            'main': self.config['vm']['main'],
+            'zfs': self.config['vm']['zfs'],
             'backup': self.config['vm']['backup']
         }
 
@@ -139,7 +140,7 @@ class ZfsTools:
             )
 
             # get all snapshots from tank
-            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {main}/{fs}'.format(fs=fs, inc=last_inc, **snap_conf)
+            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs}/{fs}'.format(fs=fs, inc=last_inc, **snap_conf)
             snap_names = subprocess.check_output(
                 cmd, universal_newlines=True, shell=True
             ).splitlines()
@@ -186,8 +187,8 @@ class ZfsTools:
         autosnap_keep = int(self.config['autosnap']['keep'])
         for fs in self.config['vm']['managed'].split(','):
             fs = fs.strip()
-            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {main}/{fs} | grep "@autosnap-"'.format(
-                main=self.config['vm']['main'], fs=fs
+            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs}/{fs} | grep "@autosnap-"'.format(
+                zfs=self.config['vm']['zfs'], fs=fs
             )
             snaps = subprocess.check_output(
                 cmd, universal_newlines=True, shell=True
@@ -198,9 +199,10 @@ class ZfsTools:
                     snap_exitcode, snap_output = subprocess.getstatusoutput(cmd)
 
     def rsync(self):
+        now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
         verbose, dry_run = self.args.verbose, self.args.dry_run
         for fs, host_src in self.config.items('rsync_hosts'):
-            dest = '%s/%s' % (self.config['rsync']['backup_path'], fs)
+            dest = '%s/%s' % (self.config['rsync']['dest_path'], fs)
             dest = dest if '/' == dest[:-1] else "%s/" % dest
             excludes = ['--exclude=%s' % exclude for exclude in self.config['rsync']['excludes'].split(',')]
             cmd = 'rsync {dry_run}{verbose}{options} {excludes} {host_src} {dest}'.format(
