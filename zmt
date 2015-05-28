@@ -197,6 +197,29 @@ class ZfsTools:
                     cmd = 'zfs destroy -r %s' % snap
                     snap_exitcode, snap_output = subprocess.getstatusoutput(cmd)
 
+    def rsync(self):
+        verbose, dry_run = self.args.verbose, self.args.dry_run
+        for fs, host_src in self.config.items('rsync_hosts'):
+            dest = '%s/%s' % (self.config['rsync']['backup_path'], fs)
+            dest = dest if '/' == dest[:-1] else "%s/" % dest
+            excludes = ['--exclude=%s' % exclude for exclude in self.config['rsync']['excludes'].split(',')]
+            cmd = 'rsync {dry_run}{verbose}{options} {excludes} {host_src} {dest}'.format(
+                dry_run=dry_run,
+                verbose=verbose,
+                options=self.config['rsync']['cmd_options'],
+                excludes=' '.join(excludes),
+                host_src=host_src,
+                dest=dest
+            )
+            # extract hostname
+            host_name = host_src.split(':')[0].split('@')[-1]
+            if self._host_is_up(host_name):
+                subprocess.check_call(
+                    cmd.split(' '), universal_newlines=True
+                )
+            else:
+                print("The host %s is down." % host_name)
+
 
 class ZfsParser:
     def __init__(self):
@@ -209,6 +232,7 @@ class ZfsParser:
         self.parser_moved(self.subparsers)
         self.parser_backup(self.subparsers)
         self.parser_cleanup(self.subparsers)
+        self.parser_rsync(self.subparsers)
         self.config = configparser.ConfigParser()
         self.config.read('/etc/zmt/zmt.ini')
 
@@ -216,7 +240,7 @@ class ZfsParser:
         args = self.parser.parse_args()
         if not hasattr(args, 'command'):
             self.parser.print_help()
-            exit()
+            exit(0)
         zfstools = ZfsTools(args, self.config)
 
         if hasattr(zfstools, args.command):
@@ -229,7 +253,6 @@ class ZfsParser:
             'autosnap',
             help='create a snapshot'
         )
-        parser_autosnap.add_argument('-v', help='verbose')
         parser_autosnap.add_argument('vm', nargs='?', default=None)
         parser_autosnap.set_defaults(command='autosnap')
 
@@ -254,6 +277,21 @@ class ZfsParser:
             help='only keep the N recent snapshots'
         )
         parser_cleanup.set_defaults(command='cleanup')
+
+    def parser_rsync(self, subparsers):
+        parser_rsync = self.subparsers.add_parser(
+            'rsync',
+            help='only keep the N recent snapshots'
+        )
+        parser_rsync.add_argument(
+            '-v', dest='verbose', const='-v ', action='store_const',
+            default='', help='verbose'
+        )
+        parser_rsync.add_argument(
+            '-n', dest='dry_run',  const='-n ', action='store_const',
+            default='', help='dry-run'
+        )
+        parser_rsync.set_defaults(command='rsync')
 
 
 def main():
