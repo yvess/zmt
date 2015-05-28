@@ -219,6 +219,14 @@ class ZfsTools:
                 subprocess.check_call(
                     cmd.split(' '), universal_newlines=True
                 )
+                if not dry_run:
+                    # metadata for the snapshot
+                    snap_conf = {
+                        'zfs': self.config['rsync']['zfs'],
+                        'name': 'autosnap-%s' % now_string
+                    }
+                    cmd = 'zfs snap -r {zfs}/{fs}@{name}'.format(fs=fs, **snap_conf)
+                    subprocess.check_call(cmd, shell=True)
             else:
                 print("The host %s is down." % host_name)
 
