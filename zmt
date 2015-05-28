@@ -54,6 +54,15 @@ class ZfsTools:
     def _get_snap_name(self, fq_snap_name):
         return fq_snap_name.split('@')[1]
 
+    def _host_is_up(self, host):
+        # check if host mirror is reachable
+        cmd = 'ping -O -c 1 %s' % host
+        ping_exitcode, ping_output = subprocess.getstatusoutput(cmd)
+        if ping_exitcode == 0:
+            return True
+        else:
+            return False
+
     def autosnap(self):
         if not self.running_vms and not self.args.vm:
             print('No vms running and no vm specified')
@@ -81,11 +90,7 @@ class ZfsTools:
             cmd = 'zfs snap -r {main}/{fs}@{name}'.format(fs=fs, **snap_conf)
             subprocess.check_call(cmd, universal_newlines=True, shell=True)
 
-        # check if host mirror is reachable
-        cmd = 'ping -O -c 1 {host_mirror}'.format(**snap_conf)
-        ping_exitcode, ping_output = subprocess.getstatusoutput(cmd)
-
-        if ping_exitcode == 0:
+        if self._host_is_up(snap_conf['host_mirror']):
             # send all snapshots over ssh to the host_mirror
             for fs in fs_to_snap:
                 last_inc = self._get_inc_from_file(
