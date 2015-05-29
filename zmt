@@ -231,19 +231,23 @@ class ZfsTools:
             # extract hostname
             host_name = host_src.split(':')[0].split('@')[-1]
             if verbose:
-                print("* syncing host:%s *" % host_name)
-                print("* with command:\n%s *\n" % cmd)
+                print("* syncing host:%s" % host_name)
+                print("* with command:\n%s\n" % cmd)
             if self._host_is_up(host_name):
                 subprocess.check_call(
                     cmd.split(' '), universal_newlines=True
                 )
-                if not dry_run:
-                    # metadata for the snapshot
-                    snap_conf = {
-                        'zfs': self.config['rsync']['zfs'],
-                        'name': 'autosnap-%s' % now_string
-                    }
-                    cmd = 'zfs snap -r {zfs}/{fs}@{name}'.format(fs=fs, **snap_conf)
+                # metadata for the snapshot
+                snap_conf = {
+                    'zfs': self.config['rsync']['zfs'],
+                    'name': 'autosnap-%s' % now_string
+                }
+                cmd = 'zfs snap -r {zfs}/{fs}@{name}'.format(fs=fs, **snap_conf)
+                if verbose:
+                    print("* zfs snap with command:\n  %s" % cmd)
+                if dry_run:
+                    print("* zfs autosnap not done, in dry-run mode")
+                else:
                     subprocess.check_call(cmd, shell=True)
             else:
                 print("The host %s is down." % host_name)
