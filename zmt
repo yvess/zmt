@@ -57,6 +57,8 @@ class ZfsTools:
         return fq_snap_name.split('@')[1]
 
     def _host_is_up(self, host):
+        if not '@' in host:
+            return True
         # check if host mirror is reachable
         cmd = 'ping -O -c 1 %s' % host
         ping_exitcode, ping_output = subprocess.getstatusoutput(cmd)
