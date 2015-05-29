@@ -212,11 +212,17 @@ class ZfsTools:
             dest = '%s/%s' % (self.config['rsync']['dest_path'], fs)
             dest = dest if '/' == dest[:-1] else "%s/" % dest
             excludes = ['--exclude=%s' % exclude for exclude in self.config['rsync']['excludes'].split(',')]
-            cmd = 'rsync {dry_run}{verbose}{options} {excludes} {host_src} {dest}'.format(
+            excludes.insert(0, '') # space between options
+            host_src, delimiter, extra_options = host_src.partition('|')
+            if extra_options:
+                extra_options = extra_options.split('|')
+                extra_options.insert(0, '') # space between options
+            cmd = 'rsync {dry_run}{verbose}{options}{excludes}{extra_options} {host_src} {dest}'.format(
                 dry_run=dry_run,
                 verbose=verbose,
                 options=self.config['rsync']['cmd_options'],
                 excludes=' '.join(excludes),
+                extra_options=' '.join(extra_options),
                 host_src=host_src,
                 dest=dest
             )
@@ -224,6 +230,7 @@ class ZfsTools:
             host_name = host_src.split(':')[0].split('@')[-1]
             if verbose:
                 print("* syncing host:%s *" % host_name)
+                print("* with command:\n%s *\n" % cmd)
             if self._host_is_up(host_name):
                 subprocess.check_call(
                     cmd.split(' '), universal_newlines=True
