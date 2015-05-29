@@ -207,6 +207,7 @@ class ZfsTools:
             rsync_hosts = self.config.items('rsync_hosts')
         now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
         verbose, dry_run = self.args.verbose, self.args.dry_run
+
         for fs, host_src in rsync_hosts:
             dest = '%s/%s' % (self.config['rsync']['dest_path'], fs)
             dest = dest if '/' == dest[:-1] else "%s/" % dest
@@ -221,6 +222,8 @@ class ZfsTools:
             )
             # extract hostname
             host_name = host_src.split(':')[0].split('@')[-1]
+            if verbose:
+                print("* syncing host:%s *" % host_name)
             if self._host_is_up(host_name):
                 subprocess.check_call(
                     cmd.split(' '), universal_newlines=True
