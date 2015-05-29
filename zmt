@@ -199,9 +199,15 @@ class ZfsTools:
                     snap_exitcode, snap_output = subprocess.getstatusoutput(cmd)
 
     def rsync(self):
+        if self.args.host:
+            rsync_hosts = [(
+                self.args.host, self.config['rsync_hosts'][self.args.host]
+            )]
+        else:
+            rsync_hosts = self.config.items('rsync_hosts')
         now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
         verbose, dry_run = self.args.verbose, self.args.dry_run
-        for fs, host_src in self.config.items('rsync_hosts'):
+        for fs, host_src in rsync_hosts:
             dest = '%s/%s' % (self.config['rsync']['dest_path'], fs)
             dest = dest if '/' == dest[:-1] else "%s/" % dest
             excludes = ['--exclude=%s' % exclude for exclude in self.config['rsync']['excludes'].split(',')]
@@ -293,6 +299,7 @@ class ZfsParser:
             'rsync',
             help='only keep the N recent snapshots'
         )
+        parser_rsync.add_argument('host', nargs='?', default=None)
         parser_rsync.add_argument(
             '-v', dest='verbose', const='-v ', action='store_const',
             default='', help='verbose'
