@@ -64,14 +64,21 @@ class ZfsTools:
         )
 
     def _get_running_containers(self):
-        running_containers = subprocess.check_output(
-            'docker ps -q|xargs docker inspect --format "{{.Name}}"|\
-             grep -oP "(?<=^/)[a-z]*(?=_.*)"|sort|uniq',
+        has_running_containers = subprocess.check_output(
+            'docker ps -q',
             universal_newlines=True, shell=True
         ).splitlines()
-        return self._make_running_list(
-            running_containers, self.managed_containers, kind='container'
-        )
+        if has_running_containers:
+            running_containers = subprocess.check_output(
+                'docker ps -q|xargs docker inspect --format "{{.Name}}"|\
+                 grep -oP "(?<=^/)[a-z]*(?=_.*)"|sort|uniq',
+                universal_newlines=True, shell=True
+            ).splitlines()
+            return self._make_running_list(
+                running_containers, self.managed_containers, kind='container'
+            )
+        else:
+            return []
 
     def _get_inc_from_file(self, snap_fname, inc_as_stream=False):
         snap_fname = '/var/lib/zmt/%s' % snap_fname
@@ -84,8 +91,8 @@ class ZfsTools:
 
     def _get_last_snap_from_zfs(self, fs):
         # get all snapshots from tank
-        cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs}/{fs}'.format(
-            fs=fs.name, zfs_main=self.config['vm']['zfs_main']
+        cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_main}/{fs}'.format(
+            fs=fs.name, zfs_main=fs.zfs_main
         )
         snap_names = subprocess.check_output(
             cmd, universal_newlines=True, shell=True
@@ -97,6 +104,8 @@ class ZfsTools:
             exit(1)
 
     def _write_snap_file(self, snap_fname, snap_name):
+        if not os.path.exists('/var/lib/zmt/autosnap/'):
+            os.makedirs('/var/lib/zmt/autosnap/')
         snap_fname = '/var/lib/zmt/%s' % snap_fname
         with open(snap_fname, 'w') as last_snap:
             last_snap.write(snap_name)
@@ -187,7 +196,7 @@ class ZfsTools:
             print('No vm/container specified')
             exit(0)
         else:
-            fs = self.args.item[0]
+            fs = self._to_filesystem(self.args.item)[0]
 
         # write last autosnap from last zfs snaphost
         self._write_snap_file(
