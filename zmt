@@ -255,11 +255,10 @@ class ZfsTools:
 
     def cleanup(self):
         autosnap_keep = int(self.config['autosnap']['keep'])
-        for fs in self.config['vm']['managed'].split(','):
-            fs = fs.strip()
-            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs}/{fs} | \
+        for fs in self.managed_fs:
+            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_main}/{fs} | \
                    grep "@autosnap-"'.format(
-                zfs_main=self.config['vm']['zfs_main'], fs=fs
+                zfs_main=fs.zfs_main, fs=fs.name
             )
             snaps = subprocess.check_output(
                 cmd, universal_newlines=True, shell=True
