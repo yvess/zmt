@@ -10,20 +10,68 @@ from datetime import datetime
 AUTOSNAP_DATESTR = '%Y-%m-%d_%H:%M:%S'
 
 
+class Filesystem:
+    def __init__(self, name, kind='vm', config=None):
+        self.name = name
+        self.kind = kind
+        self.zfs_main = self.config[kind]['zfs_main']
+        self.zfs_backup = None
+        if 'zfs_backup' in self.config[kind]['zfs_backup']:
+            self.zfs_backup = self.config[kind]['zfs_backup']
+        self.host_mirror = None
+        if 'host_mirror' in self.config[kind]:
+            self.host_mirror = self.config[kind]['host_mirror']
+
+    @property
+    def longname(self):
+        return "%s@%s" % (self.name, self.kind)
+
+
 class ZfsTools:
     def __init__(self, args, config):
         self.args = args
         self.config = config
-        self.running_vms = self._get_running_vms()
+        self.running = {}
+        self.running = [
+            self._get_running_vms() +
+            self._get_running_containers()
+        ]
+        self.managed_containers, self.managed_vms = [], []
+        if 'container' in self.config:
+            self.managed_containers = self.config['container']['managed'].split(',')
+        if 'vm' in self.config:
+            self.managed_vms = self.config['vm']['managed'].split(',')
+        self.managed_fs = [
+            self._to_filesystem(self.managed_vms) +
+            self._to_filesystem(self.managed_containers)
+        ]
+
+    def _make_running_list(self, items, managed_items, kind='vm'):
+        running_items = [
+            Filesystem(item, kind, self.config)
+            for item in items
+            if item and item in managed_items
+        ]
+        return running_items
 
     def _get_running_vms(self):
         running_vms = subprocess.check_output(
             'virsh list --name',
             universal_newlines=True, shell=True
         ).splitlines()
-        managed_vms = self.config['vm']['managed'].split(',')
-        running_vms = [vm for vm in running_vms if vm and vm in managed_vms]
-        return running_vms
+        return self._make_running_list(
+            running_vms, self.managed_vms, kind='vm'
+        )
+
+    def _get_running_containers(self):
+        running_containers = subprocess.check_output(
+            'docker ps -q|xargs docker inspect --format "{{.Name}}"|\
+             grep -oP "[a-z]*(?=_.*)"|uniq',
+            universal_newlines=True, shell=True
+        ).splitlines()
+        return self._make_running_list(
+            running_containers, self.managed_containers, kind='container'
+        )
 
     def _get_inc_from_file(self, snap_fname, inc_as_stream=False):
         snap_fname = '/var/lib/zmt/%s' % snap_fname
@@ -37,7 +85,7 @@ class ZfsTools:
     def _get_last_snap_from_zfs(self, fs):
         # get all snapshots from tank
         cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs}/{fs}'.format(
-            fs=fs, zfs=self.config['vm']['zfs']
+            fs=fs.name, zfs_main=self.config['vm']['zfs_main']
         )
         snap_names = subprocess.check_output(
             cmd, universal_newlines=True, shell=True
@@ -67,82 +115,97 @@ class ZfsTools:
         else:
             return False
 
+    def _to_filesystem(self, items):
+        kind_items = []
+        for item in items:
+            if item in self.managed_vms and item in self.managed_containers:
+                raise RuntimeError(
+                    "The item name is ambiguous. Please be more specific with @vm or @container"
+                )
+            if '@vm' or '@container' in item:
+                name, kind = item.split('@')
+            else:
+                if item in self.managed_vms:
+                    kind = 'vm'
+                if item in self.managed_containers:
+                    kind = 'container'
+                name = kind
+            kind_items.append(Filesystem(name, kind, self.config))
+        return kind_items
+
     def autosnap(self):
-        if not self.running_vms and not self.args.vm:
-            print('No vms running and no vm specified')
+        if not self.args.items and not self.running:
+            print('No vms/containers running and no vm/container specified')
             exit(0)
 
-        if self.args.vm:
-            fs_to_snap = [self.args.vm]
+        if self.args.items:
+            fs_to_snap = self._to_filesystem(self.args.items)
         else:
-            fs_to_snap = self.running_vms
+            fs_to_snap = self.running
         if not os.path.exists('/var/lib/zmt/autosnap/'):
             os.makedirs('/var/lib/zmt/autosnap/')
         now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
-
-        # metadata for the snapshot
-        snap_conf = {
-            'zfs': self.config['vm']['zfs'],
-            'name': 'autosnap-%s' % now_string,
-            'host_mirror': self.config['vm']['host_mirror'],
-        }
+        snap_name = 'autosnap-%s' % now_string
 
         # create the local snapshots
         for fs in fs_to_snap:
-            # snap it
-            cmd = 'zfs snap -r {zfs}/{fs}@{name}'.format(fs=fs, **snap_conf)
+            cmd = 'zfs snap -r {zfs_main}/{fs}@{snap_name}'.format(
+                zfs_main=fs.zfs_main, fs=fs.name, snap_name=snap_name
+            )
             subprocess.check_call(cmd, universal_newlines=True, shell=True)
 
-        if self._host_is_up(snap_conf['host_mirror']):
-            # send all snapshots over ssh to the host_mirror
-            for fs in fs_to_snap:
+        host_mirros_up = {}
+        # send all snapshots over ssh to the host_mirror
+        for fs in fs_to_snap:
+            if fs.host_mirror not in host_mirros_up:
+                is_up = self._host_is_up(fs.host_mirror)
+                host_mirros_up[fs.host_mirror] = is_up
+            if host_mirros_up[fs.host_mirror]:
                 last_inc = self._get_inc_from_file(
-                    'autosnap/%s' % fs, inc_as_stream=True
+                    'autosnap/%s' % fs.name, inc_as_stream=True
                 )
                 # send fs to host mirror
-                cmd = 'zfs send -R {inc} {zfs}/{fs}@{name} | ssh {host_mirror} "zfs recv {zfs}/{fs}"'.format(fs=fs, inc=last_inc, **snap_conf)
+                cmd = 'zfs send -R {inc} {zfs_main}/{fs}@{snap_name} |\
+                       ssh {host_mirror} "zfs recv {zfs_main}/{fs}"'.format(
+                    fs=fs.name, inc=last_inc, snap_name=snap_name
+                )
                 subprocess.check_output(
                     cmd, universal_newlines=True, shell=True
                 )
 
                 # write last autosnap
                 self._write_snap_file(
-                    'autosnap/%s' % fs, snap_conf['name']
+                    'autosnap/%s' % fs.longname, snap_name
                 )
-        else:
-            print("Mirror host is down, trying it next time")
+            else:
+                print("Mirror host is down, trying it next time")
 
     def moved(self):
-        if not self.args.vm:
-            print('No vm specified')
+        if not self.args.item:
+            print('No vm/container specified')
             exit(0)
         else:
-            fs = self.args.vm[0]
+            fs = self.args.item[0]
 
         # write last autosnap from last zfs snaphost
         self._write_snap_file(
-            'autosnap/%s' % fs, self._get_last_snap_from_zfs(fs)
+            'autosnap/%s' % fs.longname, self._get_last_snap_from_zfs(fs)
         )
 
     def backup(self):
         if not os.path.exists('/var/lib/zmt/backup/'):
             os.makedirs('/var/lib/zmt/backup/')
 
-        # metadata for the snapshot
-        snap_conf = {
-            'zfs': self.config['vm']['zfs'],
-            'backup': self.config['vm']['backup']
-        }
-
         # proccess all managed vms from zmt.ini
-        for fs in self.config['vm']['managed'].split(','):
-            fs = fs.strip()
+        for fs in self.managed_vms:
             last_inc = self._get_inc_from_file(
-                'backup/%s' % fs, inc_as_stream=False
+                'backup/%s' % fs.longname, inc_as_stream=False
             )
 
             # get all snapshots from tank
-            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs}/{fs}'.format(fs=fs, inc=last_inc, **snap_conf)
+            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_main}/{fs}'.format(
+                zfs_main=fs.zfs_main, fs=fs.name, inc=last_inc,
+            )
             snap_names = subprocess.check_output(
                 cmd, universal_newlines=True, shell=True
             ).splitlines()
@@ -160,9 +223,10 @@ class ZfsTools:
             # send the only the newest snapshot from tank to backup
             for snap_name in backup_snap_names:
                 if (last_inc and not last_inc.split('@')[1] in snap_name) or (not last_inc):
-                    cmd = 'zfs send -R {last_inc} {snap_name} | zfs recv -Fu {backup}/{fs}'.format(
-                        fs=fs, last_inc=last_inc,
-                        snap_name=snap_name, **snap_conf
+                    cmd = 'zfs send -R {last_inc} {snap_name} | \
+                           zfs recv -Fu {zfs_backup}/{fs}'.format(
+                        zfs_backup=fs.zfs_backup, fs=fs.name, last_inc=last_inc,
+                        snap_name=snap_name
                     )
                     subprocess.check_output(
                         cmd, universal_newlines=True, shell=True
@@ -175,12 +239,14 @@ class ZfsTools:
             if backup_done:
                 # write last backupsnap
                 self._write_snap_file(
-                    'backup/%s' % fs,
+                    'backup/%s' % fs.longname,
                     self._get_snap_name(backup_snap_names[-1])
                 )
 
                 # fix mountpoints
-                cmd = 'zfs set mountpoint=/{backup}/{fs} {backup}/{fs}'.format(fs=fs, **snap_conf)
+                cmd = 'zfs set mountpoint=/{zfs_backup}/{fs} {zfs_backup}/{fs}'.format(
+                    zfs_backup=fs.zfs_backup, fs=fs.name,
+                )
                 subprocess.check_output(
                     cmd, universal_newlines=True, shell=True
                 )
@@ -189,8 +255,9 @@ class ZfsTools:
         autosnap_keep = int(self.config['autosnap']['keep'])
         for fs in self.config['vm']['managed'].split(','):
             fs = fs.strip()
-            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs}/{fs} | grep "@autosnap-"'.format(
-                zfs=self.config['vm']['zfs'], fs=fs
+            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs}/{fs} | \
+                   grep "@autosnap-"'.format(
+                zfs_main=self.config['vm']['zfs_main'], fs=fs
             )
             snaps = subprocess.check_output(
                 cmd, universal_newlines=True, shell=True
@@ -239,10 +306,10 @@ class ZfsTools:
                 )
                 # metadata for the snapshot
                 snap_conf = {
-                    'zfs': self.config['rsync']['zfs'],
+                    'zfs_backup': self.config['rsync']['zfs_backup'],
                     'name': 'autosnap-%s' % now_string
                 }
-                cmd = 'zfs snap -r {zfs}/{fs}@{name}'.format(fs=fs, **snap_conf)
+                cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(fs=fs.name, **snap_conf)
                 if verbose:
                     print("* zfs snap with command:\n  %s" % cmd)
                 if dry_run:
@@ -285,7 +352,7 @@ class ZfsParser:
             'autosnap',
             help='create a snapshot'
         )
-        parser_autosnap.add_argument('vm', nargs='?', default=None)
+        parser_autosnap.add_argument('items', nargs='*', default=None)
         parser_autosnap.set_defaults(command='autosnap')
 
     def parser_moved(self, subparsers):
@@ -293,15 +360,15 @@ class ZfsParser:
             'moved',
             help='set autosnap file to last snapshot'
         )
-        parser_moved.add_argument('vm', nargs=1)
+        parser_moved.add_argument('item', nargs=1)
         parser_moved.set_defaults(command='moved')
 
     def parser_backup(self, subparsers):
         parser_backup = self.subparsers.add_parser(
-            'backup',
+            'zfs_backup',
             help='create a backup'
         )
-        parser_backup.set_defaults(command='backup')
+        parser_backup.set_defaults(command='zfs_backup')
 
     def parser_cleanup(self, subparsers):
         parser_cleanup = self.subparsers.add_parser(
