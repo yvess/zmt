@@ -66,7 +66,7 @@ class ZfsTools:
     def _get_running_containers(self):
         running_containers = subprocess.check_output(
             'docker ps -q|xargs docker inspect --format "{{.Name}}"|\
-             grep -oP "[a-z]*(?=_.*)"|uniq',
+             grep -oP "(?<=^/)[a-z]*(?=_.*)"|sort|uniq',
             universal_newlines=True, shell=True
         ).splitlines()
         return self._make_running_list(
