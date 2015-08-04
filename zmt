@@ -105,7 +105,7 @@ class ZfsTools:
         return fq_snap_name.split('@')[1]
 
     def _host_is_up(self, host):
-        if not '@' in host:
+        if '@' not in host:
             return True
         # check if host mirror is reachable
         cmd = 'ping -O -c 1 %s' % host
@@ -157,10 +157,10 @@ class ZfsTools:
         host_mirros_up = {}
         # send all snapshots over ssh to the host_mirror
         for fs in fs_to_snap:
-            if fs.host_mirror not in host_mirros_up:
+            if fs.host_mirror and fs.host_mirror not in host_mirros_up:
                 is_up = self._host_is_up(fs.host_mirror)
                 host_mirros_up[fs.host_mirror] = is_up
-            if host_mirros_up[fs.host_mirror]:
+            if fs.host_mirror and host_mirros_up[fs.host_mirror]:
                 last_inc = self._get_inc_from_file(
                     'autosnap/%s' % fs.longname, inc_as_stream=True
                 )
@@ -179,7 +179,8 @@ class ZfsTools:
                     'autosnap/%s' % fs.longname, snap_name
                 )
             else:
-                print("Mirror host is down, trying it next time")
+                if fs.host_mirror:
+                    print("Mirror host is down, trying it next time")
 
     def moved(self):
         if not self.args.item:
