@@ -215,8 +215,13 @@ class ZfsTools:
         if not os.path.exists('/var/lib/zmt/backup/'):
             os.makedirs('/var/lib/zmt/backup/')
 
-        # proccess all managed fs from zmt.ini
-        for fs in self.managed_fs:
+        if self.args.items:
+            fs_to_backup = self._to_filesystem(self.args.items)
+        else:
+            # proccess all managed fs from zmt.ini
+            fs_to_backup = self.managed_fs
+
+        for fs in fs_to_backup:
             last_inc = self._get_inc_from_file(
                 'backup/%s' % fs.longname, inc_as_stream=False
             )
@@ -386,6 +391,7 @@ class ZfsParser:
             'backup',
             help='create a backup'
         )
+        parser_backup.add_argument('items', nargs='*', default=None)
         parser_backup.set_defaults(command='backup')
 
     def parser_cleanup(self, subparsers):
