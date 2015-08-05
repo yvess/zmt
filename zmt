@@ -325,12 +325,10 @@ class ZfsTools:
                 subprocess.check_call(
                     cmd.split(' '), universal_newlines=True
                 )
-                # metadata for the snapshot
-                snap_conf = {
-                    'zfs_backup': self.config['rsync']['zfs_backup'],
-                    'name': 'autosnap-%s' % now_string
-                }
-                cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(fs=fs.name, **snap_conf)
+                cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(
+                    zfs_backup=self.config['rsync']['zfs_backup'],
+                    fs=fs, name='autosnap-%s' % now_string
+                )
                 if verbose:
                     print("* zfs snap with command:\n  %s" % cmd)
                 if dry_run:
