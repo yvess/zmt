@@ -26,6 +26,14 @@ class Filesystem:
     def longname(self):
         return "%s@%s" % (self.name, self.kind)
 
+    @property
+    def main_fs(self):
+        return "%s/%s" % (self.zfs_main, self.name)
+
+    @property
+    def backup_fs(self):
+        return "%s/%s" % (self.zfs_backup, self.name)
+
     def __str__(self):
         return self.longname
 
