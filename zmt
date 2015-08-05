@@ -247,14 +247,12 @@ class ZfsTools:
             # send the only the newest snapshot from tank to backup
             for snap_name in backup_snap_names:
                 if (last_inc and not last_inc.split('@')[1] in snap_name) or (not last_inc):
-                    cmd = 'zfs send -R {last_inc} {snap_name} | \
-                           zfs recv -Fu {zfs_backup}/{fs}'.format(
+                    cmd = 'zfs send {last_inc} {snap_name} | \
+                           zfs recv -u {zfs_backup}/{fs}'.format(
                         zfs_backup=fs.zfs_backup, fs=fs.name, last_inc=last_inc,
                         snap_name=snap_name
                     )
-                    subprocess.check_output(
-                        cmd, universal_newlines=True, shell=True
-                    )
+                    subprocess.check_output(cmd, universal_newlines=True, shell=True)
                     backup_done = True
                     last_inc = '-i @%s' % self._get_snap_name(snap_name)
                 else:
