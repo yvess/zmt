@@ -6,6 +6,7 @@ import subprocess
 import configparser
 import os
 from datetime import datetime
+from collections import OrderedDict
 
 AUTOSNAP_DATESTR = '%Y-%m-%d_%H:%M:%S'
 
@@ -181,6 +182,7 @@ class ZfsTools:
                 last_inc = self._get_inc_from_file(
                     'autosnap/%s' % fs.longname, inc_as_stream=True
                 )
+
                 # send fs to host mirror
                 cmd = 'zfs send -R {inc} {zfs_main}/{fs}@{snap_name} |\
                        ssh {host_mirror} "zfs recv {zfs_main}/{fs}"'.format(
@@ -227,42 +229,38 @@ class ZfsTools:
             )
 
             # get all snapshots from tank
-            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_main}/{fs}'.format(
+            cmd = 'zfs list -H -S creation -r -o name -t snap {zfs_main}/{fs}'.format(
                 zfs_main=fs.zfs_main, fs=fs.name, inc=last_inc,
             )
             snap_names = subprocess.check_output(
                 cmd, universal_newlines=True, shell=True
             ).splitlines()
 
-            backup_snap_names = []
-            for snap_name in snap_names:
-                if "@autosnap-" in snap_name:
-                    backup_snap_names.append(snap_name)
-                    break
-                else:
-                    backup_snap_names.append(snap_name)
-            backup_snap_names.reverse()
+            backup_snap_names = OrderedDict()
+            for snap_fullname in snap_names:
+                snap_root, snap_name = snap_fullname.split("@")
+                if snap_root not in backup_snap_names:
+                    backup_snap_names[snap_root] = snap_name
             backup_done = False
 
             # send the only the newest snapshot from tank to backup
-            for snap_name in backup_snap_names:
+            for snap_root, snap_name in backup_snap_names.items():
                 if (last_inc and not last_inc.split('@')[1] in snap_name) or (not last_inc):
-                    cmd = 'zfs send {last_inc} {snap_name} | \
-                           zfs recv -u {zfs_backup}/{fs}'.format(
+                    snap_backup_root = snap_root.replace(fs.zfs_main, fs.zfs_backup)
+                    cmd = 'zfs send {last_inc} {snap_root}@{snap_name} | \
+                           zfs recv -u {snap_backup_root}'.format(
                         zfs_backup=fs.zfs_backup, fs=fs.name, last_inc=last_inc,
-                        snap_name=snap_name
+                        snap_name=snap_name, snap_root=snap_root, snap_backup_root=snap_backup_root
                     )
                     subprocess.check_output(cmd, universal_newlines=True, shell=True)
                     backup_done = True
-                    last_inc = '-i @%s' % self._get_snap_name(snap_name)
                 else:
-                    print("no newer snapshot to backup")
+                    print("no newer snapshot to backup for %s" % snap_root)
 
             if backup_done:
                 # write last backupsnap
                 self._write_snap_file(
-                    'backup/%s' % fs.longname,
-                    self._get_snap_name(backup_snap_names[-1])
+                    'backup/%s' % fs.longname, backup_snap_names[fs.main_fs]
                 )
 
                 # fix mountpoints
