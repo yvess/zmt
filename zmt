@@ -38,6 +38,9 @@ class Filesystem:
     def __str__(self):
         return self.longname
 
+    def __repr__(self):
+        return self.longname
+
 
 class ZfsTools:
     def __init__(self, args, config):
