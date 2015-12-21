@@ -242,8 +242,10 @@ class ZfsTools:
             backup_snap_names = OrderedDict()
             for snap_fullname in snap_names:
                 snap_root, snap_name = snap_fullname.split("@")
-                if snap_root not in backup_snap_names:
-                    backup_snap_names[snap_root] = snap_name
+                if (self.args.backup_snap_name and snap_name == self.args.backup_snap_name) \
+                   or not self.args.backup_snap_name:
+                    if snap_root not in backup_snap_names:
+                        backup_snap_names[snap_root] = snap_name
             backup_done = False
 
             # send the only the newest snapshot from tank to backup
@@ -394,6 +396,10 @@ class ZfsParser:
         parser_backup.add_argument(
             '-t', '--test', dest='test', action='store_true',
             default=False, help='only show zfs commands and exit'
+        )
+        parser_backup.add_argument(
+            '-s', '--snap-name', dest='backup_snap_name', action='store',
+            default='', help=''
         )
         parser_backup.add_argument('items', nargs='*', default=None)
         parser_backup.set_defaults(command='backup')
