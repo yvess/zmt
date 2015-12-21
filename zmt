@@ -187,7 +187,7 @@ class ZfsTools:
                 )
 
                 # send fs to host mirror
-                cmd = 'zfs send -R {inc} {zfs_main}/{fs}@{snap_name} |\
+                cmd = 'zfs send -R {inc} {zfs_main}/{fs}@{snap_name}|\
                        ssh {host_mirror} "zfs recv {zfs_main}/{fs}"'.format(
                     zfs_main=fs.zfs_main, fs=fs.name, host_mirror=fs.host_mirror,
                     inc=last_inc, snap_name=snap_name
@@ -250,13 +250,16 @@ class ZfsTools:
             for snap_root, snap_name in backup_snap_names.items():
                 if (last_inc and not last_inc.split('@')[1] in snap_name) or (not last_inc):
                     snap_backup_root = snap_root.replace(fs.zfs_main, fs.zfs_backup)
-                    cmd = 'zfs send {last_inc} {snap_root}@{snap_name} | \
+                    cmd = 'zfs send {last_inc} {snap_root}@{snap_name}|\
                            zfs recv -u {snap_backup_root}'.format(
                         zfs_backup=fs.zfs_backup, fs=fs.name, last_inc=last_inc,
                         snap_name=snap_name, snap_root=snap_root, snap_backup_root=snap_backup_root
                     )
-                    subprocess.check_output(cmd, universal_newlines=True, shell=True)
-                    backup_done = True
+                    if not self.args.test:
+                        subprocess.check_output(cmd, universal_newlines=True, shell=True)
+                        backup_done = True
+                    else:
+                        print(cmd.replace('  ', ''))
                 else:
                     print("no newer snapshot to backup for %s" % snap_root)
 
@@ -277,7 +280,7 @@ class ZfsTools:
     def cleanup(self):
         autosnap_keep = int(self.config['autosnap']['keep'])
         for fs in self.managed_fs:
-            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_main}/{fs} | \
+            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_main}/{fs}|\
                    grep "@autosnap-"'.format(
                 zfs_main=fs.zfs_main, fs=fs.name
             )
@@ -387,6 +390,10 @@ class ZfsParser:
         parser_backup = self.subparsers.add_parser(
             'backup',
             help='create a backup'
+        )
+        parser_backup.add_argument(
+            '-t', '--test', dest='test', action='store_true',
+            default=False, help='only show zfs commands and exit'
         )
         parser_backup.add_argument('items', nargs='*', default=None)
         parser_backup.set_defaults(command='backup')
