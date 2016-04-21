@@ -5,6 +5,8 @@ import argparse
 import subprocess
 import configparser
 import os
+import sys
+import traceback
 from datetime import datetime
 from collections import OrderedDict
 
@@ -216,6 +218,16 @@ class ZfsTools:
             'autosnap/%s' % fs.longname, self._get_last_snap_from_zfs(fs)
         )
 
+    def _get_backup_snap_names(self, snap_names):
+        backup_snap_names = OrderedDict()
+        for snap_fullname in snap_names:
+            snap_root, snap_name = snap_fullname.split("@")
+            if (self.args.backup_snap_name and snap_name == self.args.backup_snap_name) \
+               or not self.args.backup_snap_name:
+                if snap_root not in backup_snap_names:
+                    backup_snap_names[snap_root] = snap_name
+        return backup_snap_names
+
     def backup(self):
         if not os.path.exists('/var/lib/zmt/backup/'):
             os.makedirs('/var/lib/zmt/backup/')
@@ -226,58 +238,59 @@ class ZfsTools:
             # proccess all managed fs from zmt.ini
             fs_to_backup = self.managed_fs
 
+        failures = ''
         for fs in fs_to_backup:
-            last_inc = self._get_inc_from_file(
-                'backup/%s' % fs.longname, inc_as_stream=False
-            )
-
-            # get all snapshots from tank
-            cmd = 'zfs list -H -S creation -r -o name -t snap {zfs_main}/{fs}'.format(
-                zfs_main=fs.zfs_main, fs=fs.name, inc=last_inc,
-            )
-            snap_names = subprocess.check_output(
-                cmd, universal_newlines=True, shell=True
-            ).splitlines()
-
-            backup_snap_names = OrderedDict()
-            for snap_fullname in snap_names:
-                snap_root, snap_name = snap_fullname.split("@")
-                if (self.args.backup_snap_name and snap_name == self.args.backup_snap_name) \
-                   or not self.args.backup_snap_name:
-                    if snap_root not in backup_snap_names:
-                        backup_snap_names[snap_root] = snap_name
-            backup_done = False
-
-            # send the only the newest snapshot from tank to backup
-            for snap_root, snap_name in backup_snap_names.items():
-                if (last_inc and not last_inc.split('@')[1] in snap_name) or (not last_inc):
-                    snap_backup_root = snap_root.replace(fs.zfs_main, fs.zfs_backup)
-                    cmd = 'zfs send {last_inc} {snap_root}@{snap_name}|\
-                           zfs recv -u {snap_backup_root}'.format(
-                        zfs_backup=fs.zfs_backup, fs=fs.name, last_inc=last_inc,
-                        snap_name=snap_name, snap_root=snap_root, snap_backup_root=snap_backup_root
-                    )
-                    if not self.args.test:
-                        subprocess.check_output(cmd, universal_newlines=True, shell=True)
-                        backup_done = True
-                    else:
-                        print(cmd.replace('  ', ''))
-                else:
-                    print("no newer snapshot to backup for %s" % snap_root)
-
-            if backup_done:
-                # write last backupsnap
-                self._write_snap_file(
-                    'backup/%s' % fs.longname, backup_snap_names[fs.main_fs]
+            try:
+                last_inc = self._get_inc_from_file(
+                    'backup/%s' % fs.longname, inc_as_stream=False
                 )
 
-                # fix mountpoints
-                cmd = 'zfs set mountpoint=/{zfs_backup}/{fs} {zfs_backup}/{fs}'.format(
-                    zfs_backup=fs.zfs_backup, fs=fs.name,
+                # get all snapshots from tank
+                cmd = 'zfs list -H -S creation -r -o name -t snap {zfs_main}/{fs}'.format(
+                    zfs_main=fs.zfs_main, fs=fs.name, inc=last_inc,
                 )
-                subprocess.check_output(
+                snap_names = subprocess.check_output(
                     cmd, universal_newlines=True, shell=True
-                )
+                ).splitlines()
+
+                backup_snap_names = self._get_backup_snap_names(snap_names)
+                backup_done = False
+
+                # send only the newest snapshot from tank to backup
+                for snap_root, snap_name in backup_snap_names.items():
+                    if (last_inc and not last_inc.split('@')[1] in snap_name) or (not last_inc):
+                        snap_backup_root = snap_root.replace(fs.zfs_main, fs.zfs_backup)
+                        cmd = 'zfs send {last_inc} {snap_root}@{snap_name}|\
+                               zfs recv -u {snap_backup_root}'.format(
+                            zfs_backup=fs.zfs_backup, fs=fs.name, last_inc=last_inc,
+                            snap_name=snap_name, snap_root=snap_root, snap_backup_root=snap_backup_root
+                        )
+                        if not self.args.test:
+                            subprocess.check_output(cmd, universal_newlines=True, shell=True)
+                            backup_done = True
+                        else:
+                            print(cmd.replace('  ', ''))
+                    else:
+                        print("no newer snapshot to backup for %s" % snap_root)
+
+                if backup_done:
+                    # write last backupsnap
+                    self._write_snap_file(
+                        'backup/%s' % fs.longname, backup_snap_names[fs.main_fs]
+                    )
+
+                    # fix mountpoints
+                    cmd = 'zfs set mountpoint=/{zfs_backup}/{fs} {zfs_backup}/{fs}'.format(
+                        zfs_backup=fs.zfs_backup, fs=fs.name,
+                    )
+                    subprocess.check_output(
+                        cmd, universal_newlines=True, shell=True
+                    )
+            except:
+                failures += traceback.format_exc()
+        if failures:
+            print(failures)
+            sys.exit(1)
 
     def cleanup(self):
         autosnap_keep = int(self.config['autosnap']['keep'])
@@ -304,45 +317,64 @@ class ZfsTools:
         now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
         verbose, dry_run = self.args.verbose, self.args.dry_run
 
+        failures = ''
         for fs, host_src in rsync_hosts:
-            dest = '%s/%s' % (self.config['rsync']['dest_path'], fs)
-            dest = dest if '/' == dest[:-1] else "%s/" % dest
-            excludes = ['--exclude=%s' % exclude for exclude in self.config['rsync']['excludes'].split(',')]
-            excludes.insert(0, '') # space between options
-            host_src, delimiter, extra_options = host_src.partition('|')
-            if extra_options:
-                extra_options = extra_options.split('|')
-                extra_options.insert(0, '') # space between options
-            cmd = 'rsync {dry_run}{verbose}{options}{excludes}{extra_options} {host_src} {dest}'.format(
-                dry_run=dry_run,
-                verbose=verbose,
-                options=self.config['rsync']['cmd_options'],
-                excludes=' '.join(excludes),
-                extra_options=' '.join(extra_options),
-                host_src=host_src,
-                dest=dest
-            )
-            # extract hostname
-            host_name = host_src.split(':')[0].split('@')[-1]
-            if verbose:
-                print("* syncing host:%s" % host_name)
-                print("* with command:\n%s\n" % cmd)
-            if self._host_is_up(host_name):
-                subprocess.check_call(
-                    cmd.split(' '), universal_newlines=True
+            current_failure_tries = 3
+
+            def create_rsync_cmd(host_src):
+                dest = '%s/%s' % (self.config['rsync']['dest_path'], fs)
+                dest = dest if '/' == dest[:-1] else "%s/" % dest
+                excludes = ['--exclude=%s' % exclude for exclude in self.config['rsync']['excludes'].split(',')]
+                excludes.insert(0, '')  # space between options
+                host_src, delimiter, extra_options = host_src.partition('|')
+                if extra_options:
+                    extra_options = extra_options.split('|')
+                    extra_options.insert(0, '')  # space between options
+                cmd = 'rsync {dry_run}{verbose}{options}{excludes}{extra_options} {host_src} {dest}'.format(
+                    dry_run=dry_run,
+                    verbose=verbose,
+                    options=self.config['rsync']['cmd_options'],
+                    excludes=' '.join(excludes),
+                    extra_options=' '.join(extra_options),
+                    host_src=host_src,
+                    dest=dest
                 )
-                cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(
-                    zfs_backup=self.config['rsync']['zfs_backup'],
-                    fs=fs, name='autosnap-%s' % now_string
-                )
+                # extract hostname
+                host_name = host_src.split(':')[0].split('@')[-1]
                 if verbose:
-                    print("* zfs snap with command:\n  %s" % cmd)
-                if dry_run:
-                    print("* zfs autosnap not done, in dry-run mode")
-                else:
-                    subprocess.check_call(cmd, shell=True)
+                    print("* syncing host:%s" % host_name)
+                    print("* with command:\n%s\n" % cmd)
+                return (cmd, host_name)
+
+            cmd, host_name = create_rsync_cmd(host_src)
+            if self._host_is_up(host_name):
+                def exec_rsync_cmd(failures, current_failure_tries, cmd):
+                    if current_failure_tries > 1:
+                        try:
+                            subprocess.check_call(
+                                cmd.split(' '), universal_newlines=True
+                            )
+                            cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(
+                                zfs_backup=self.config['rsync']['zfs_backup'],
+                                fs=fs, name='autosnap-%s' % now_string
+                            )
+                            if verbose:
+                                print("* zfs snap rsync with command:\n  %s" % cmd)
+                            if dry_run:
+                                print("* zfs snap rsync not done, in dry-run mode")
+                            else:
+                                subprocess.check_call(cmd, shell=True)
+                        except:
+                            failures += traceback.format_exc()
+                            current_failure_tries -= 1
+                            failures = exec_rsync_cmd(failures, current_failure_tries, cmd)
+                    return failures
+                failures = exec_rsync_cmd(failures, current_failure_tries, cmd)
             else:
                 print("The host %s is down." % host_name)
+        if failures:
+            print(failures)
+            sys.exit(1)
 
 
 class ZfsParser:
@@ -422,7 +454,7 @@ class ZfsParser:
             default='', help='verbose'
         )
         parser_rsync.add_argument(
-            '-n', dest='dry_run',  const='-n ', action='store_const',
+            '-n', dest='dry_run', const='-n ', action='store_const',
             default='', help='dry-run'
         )
         parser_rsync.set_defaults(command='rsync')
