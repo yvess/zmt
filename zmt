@@ -85,7 +85,7 @@ class ZfsTools:
         if has_running_containers:
             running_containers = subprocess.check_output(
                 'docker ps -q|xargs docker inspect --format "{{.Name}}"|\
-                 grep -oP "(?<=^/)[a-z]*(?=_.*)"|sort|uniq',
+                 grep -oP "(?<=^/)[a-zA-Z0-9]*(?=_.*)"|sort|uniq',
                 universal_newlines=True, shell=True
             ).splitlines()
             return self._make_running_list(
@@ -407,6 +407,7 @@ class ZfsParser:
         self.parser_backup(self.subparsers)
         self.parser_cleanup(self.subparsers)
         self.parser_rsync(self.subparsers)
+        self.parser_inspect(self.subparsers)
         self.config = configparser.ConfigParser()
         self.config.read('/etc/zmt/zmt.ini')
 
