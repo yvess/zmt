@@ -206,6 +206,24 @@ class ZfsTools:
                 if fs.host_mirror:
                     print("Mirror host is down, trying it next time")
 
+    def inspect(self):
+        print('* config* ')
+        print('managed_containers: %s' % self.managed_containers)
+        print('managed_vms: %s' % self.managed_vms)
+        print()
+        print('* running filesystems to snap *')
+        for fs in self.running:
+            print(
+                '''name: {name}@{kind}
+host_mirror: {host_mirror}
+zfs_main:{zfs_main}\n'''.format(
+                    zfs_main=fs.zfs_main,
+                    name=fs.name,
+                    host_mirror=fs.host_mirror,
+                    kind=fs.kind,
+                )
+            )
+
     def moved(self):
         if not self.args.item:
             print('No vm/container specified')
@@ -458,6 +476,13 @@ class ZfsParser:
             default='', help='dry-run'
         )
         parser_rsync.set_defaults(command='rsync')
+
+    def parser_inspect(self, subparsers):
+        parser_inspect = self.subparsers.add_parser(
+            'inspect',
+            help='inspect zmt'
+        )
+        parser_inspect.set_defaults(command='inspect')
 
 
 def main():
