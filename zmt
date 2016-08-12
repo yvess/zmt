@@ -340,9 +340,10 @@ zfs_main:{zfs_main}\n'''.format(
     def cleanup(self):
         for fs in self.managed_fs:
             # normal snaps
-            snaps = self._list_snaps(fs.zfs_main, fs.name)
-            if len(snaps) > fs.autosnaps_keep:
-                self._destroy_snaps(snaps, fs.autosnaps_keep)
+            if self.args.tank_destroy:
+                snaps = self._list_snaps(fs.zfs_main, fs.name)
+                if len(snaps) > fs.autosnaps_keep:
+                    self._destroy_snaps(snaps, fs.autosnaps_keep)
 
             # backup snaps
             backupsnaps = self._list_snaps(fs.zfs_backup, fs.name)
@@ -491,6 +492,10 @@ class ZfsParser:
         parser_cleanup.add_argument(
             '-n', dest='dry_run', const=' -n ', action='store_const',
             default='', help='dry-run'
+        )
+        parser_cleanup.add_argument(
+            '--no-tank-destroy', dest='tank_destroy', action='store_false',
+            default=True, help="only delete backup snapshos, don't touch tank"
         )
         parser_cleanup.set_defaults(command='cleanup')
 
