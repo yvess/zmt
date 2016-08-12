@@ -21,9 +21,18 @@ class Filesystem:
         self.zfs_backup = None
         if 'zfs_backup' in config[kind]:
             self.zfs_backup = config[kind]['zfs_backup']
+
         self.host_mirror = None
         if 'host_mirror' in config[kind]:
             self.host_mirror = config[kind]['host_mirror']
+
+        self.autosnaps_keep = int(config['defaults']['autosnaps_keep'])
+        if 'autosnaps_keep' in config[kind]:
+            self.autosnaps_keep = int(config[kind]['autosnaps_keep'])
+
+        self.backupsnaps_keep = int(config['defaults']['backupsnaps_keep'])
+        if 'backupsnaps_keep' in config[kind]:
+            self.backupsnaps_keep = int(config[kind]['backupsnaps_keep'])
 
     @property
     def longname(self):
@@ -310,20 +319,35 @@ zfs_main:{zfs_main}\n'''.format(
             print(failures)
             sys.exit(1)
 
-    def cleanup(self):
-        autosnap_keep = int(self.config['autosnap']['keep'])
-        for fs in self.managed_fs:
-            cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_main}/{fs}|\
-                   grep "@autosnap-"'.format(
-                zfs_main=fs.zfs_main, fs=fs.name
+    def _list_snaps(self, zfs_root, fs_name):
+        cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_root}/{fs_name}|'
+        cmd = (cmd + 'grep "@autosnap-"').format(zfs_root=zfs_root, fs_name=fs_name)
+        snaps = subprocess.check_output(
+            cmd, universal_newlines=True, shell=True
+        ).splitlines()
+        return snaps
+
+    def _destroy_snaps(self, snaps, snaps_keep):
+        verbose, dry_run = self.args.verbose, self.args.dry_run
+        for snap in snaps[snaps_keep:]:
+            cmd = 'zfs destroy{verbose}{dry_run} -r {snap}'.format(
+                verbose=verbose, dry_run=dry_run, snap=snap
             )
-            snaps = subprocess.check_output(
-                cmd, universal_newlines=True, shell=True
-            ).splitlines()
-            if len(snaps) > autosnap_keep:
-                for snap in snaps[autosnap_keep:]:
-                    cmd = 'zfs destroy -r %s' % snap
-                    snap_exitcode, snap_output = subprocess.getstatusoutput(cmd)
+            snap_exitcode, snap_output = subprocess.getstatusoutput(cmd)
+            if verbose:
+                print(snap_output)
+
+    def cleanup(self):
+        for fs in self.managed_fs:
+            # normal snaps
+            snaps = self._list_snaps(fs.zfs_main, fs.name)
+            if len(snaps) > fs.autosnaps_keep:
+                self._destroy_snaps(snaps, fs.autosnaps_keep)
+
+            # backup snaps
+            backupsnaps = self._list_snaps(fs.zfs_backup, fs.name)
+            if len(backupsnaps) > fs.backupsnaps_keep:
+                self._destroy_snaps(backupsnaps, fs.backupsnaps_keep)
 
     def rsync(self):
         if self.args.host:
@@ -459,6 +483,14 @@ class ZfsParser:
         parser_cleanup = self.subparsers.add_parser(
             'cleanup',
             help='only keep the N recent snapshots'
+        )
+        parser_cleanup.add_argument(
+            '-v', dest='verbose', const=' -v ', action='store_const',
+            default='', help='verbose'
+        )
+        parser_cleanup.add_argument(
+            '-n', dest='dry_run', const=' -n ', action='store_const',
+            default='', help='dry-run'
         )
         parser_cleanup.set_defaults(command='cleanup')
 
