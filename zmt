@@ -80,6 +80,9 @@ class ZfsTools:
             self._to_filesystem(self.managed_vms) +
             self._to_filesystem(self.managed_containers)
         )
+        self._update_running()
+
+    def _update_running(self):
         self.running = self._get_running_vms() + self._get_running_containers()
 
     def _make_running_list(self, items, managed_items, kind='vm'):
@@ -139,6 +142,10 @@ class ZfsTools:
             print("the last snapshot needs to be a autosnap snapshot from zmt")
             exit(1)
 
+    def _get_snap_file_path(self, fs, snap_type="autosnap"):
+        snap_fname = '/var/lib/zmt/%s/%s' % (snap_type, fs.longname)
+        return snap_fname
+
     def _write_snap_file(self, snap_fname, snap_name):
         if not os.path.exists('/var/lib/zmt/autosnap/'):
             os.makedirs('/var/lib/zmt/autosnap/')
@@ -187,6 +194,11 @@ class ZfsTools:
             fs_to_snap = self._to_filesystem(self.args.items)
         else:
             fs_to_snap = self.running
+        self._autosnap(fs_to_snap)
+
+    def _autosnap(self, fs_to_snap):
+        if not isinstance(fs_to_snap, list):
+            fs_to_snap = [fs_to_snap]
         if not os.path.exists('/var/lib/zmt/autosnap/'):
             os.makedirs('/var/lib/zmt/autosnap/')
         now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
@@ -212,7 +224,7 @@ class ZfsTools:
 
                 # send fs to host mirror
                 cmd = 'zfs send -R {inc} {zfs_main}/{fs}@{snap_name}|\
-                       ssh {host_mirror} "zfs recv {zfs_main}/{fs}"'.format(
+                       ssh {host_mirror} "zfs recv -u {zfs_main}/{fs}"'.format(
                     zfs_main=fs.zfs_main, fs=fs.name, host_mirror=fs.host_mirror,
                     inc=last_inc, snap_name=snap_name
                 )
@@ -246,17 +258,59 @@ zfs_main:{zfs_main}\n'''.format(
                 )
             )
 
+    def _get_fs_mountpoint(self, fs):
+        cmd = 'zfs get -H -o value mountpoint %s' % fs.main_fs
+        zfs_mountpoint = subprocess.check_output(
+            cmd.split(' '), universal_newlines=True
+        ).strip()
+        return zfs_mountpoint
+
+    def _zmt_mirror_exec(self, zmt_cmd, fs):
+        script_path = os.path.abspath(sys.argv[0])
+        cmd = 'ssh {host_mirror} "{script_path} {zmt_cmd}"'.format(
+            host_mirror=fs.host_mirror, script_path=script_path,
+            zmt_cmd=zmt_cmd
+        )
+        subprocess.check_call(
+            cmd, universal_newlines=True, shell=True
+        )
+
+    def _zfs_exec(self, zfs_cmd, fs):
+        cmd = 'zfs {zfs_cmd} {fs_main_fs}'.format(
+            zfs_cmd=zfs_cmd, fs_main_fs=fs.main_fs
+        )
+        subprocess.check_call(
+            cmd, universal_newlines=True, shell=True
+        )
+
+    def _zfs_mirror_exec(self, zfs_cmd, fs):
+        cmd = 'ssh {host_mirror} "zfs {zfs_cmd} {fs_main_fs}"'.format(
+            host_mirror=fs.host_mirror, zfs_cmd=zfs_cmd, fs_main_fs=fs.main_fs
+        )
+        subprocess.check_call(
+            cmd, universal_newlines=True, shell=True
+        )
+
     def moved(self):
         if not self.args.item:
             print('No vm/container specified')
             exit(0)
         else:
             fs = self._to_filesystem(self.args.item)[0]
+        self._moved(fs)
 
-        # write last autosnap from last zfs snaphost
-        self._write_snap_file(
-            'autosnap/%s' % fs.longname, self._get_last_snap_from_zfs(fs)
-        )
+    def _moved(self, fs):
+        snap_path = self._get_snap_file_path(fs)
+        if os.path.exists(snap_path):
+            # remove /var/lib/zmt/autosnap file
+            if fs not in self.running:
+                os.remove(snap_path)
+        else:
+            # write last autosnap from last zfs snaphost
+            self._write_snap_file(
+                'autosnap/%s' % fs.longname, self._get_last_snap_from_zfs(fs)
+            )
+
     def start(self):
         if not self.args.item:
             print('No vm/container specified')
@@ -277,6 +331,30 @@ zfs_main:{zfs_main}\n'''.format(
         if fs.kind == 'container':
             self._compose(fs, 'stop')
 
+    def move(self):
+        if not self.args.item:
+            print('No vm/container specified')
+            exit(0)
+
+        try:
+            fs = self._to_filesystem(self.args.item)[0]
+        except UnboundLocalError:
+            print("The filesystem doesn't exists")
+            exit(0)
+
+        if fs not in self.running:
+            print('The filesystem must be used for automatic moving')
+            exit(0)
+        fs = self._to_filesystem(self.args.item)[0]
+
+        if fs.kind == 'container':
+            self._compose(fs, 'stop')
+            self._autosnap(fs)
+            self._moved(fs)
+            self._zfs_exec('umount', fs)
+            self._zfs_mirror_exec('mount', fs)
+            self._zmt_mirror_exec("moved %s" % fs.longname, fs)
+            self._zmt_mirror_exec("start %s" % fs.longname, fs)
 
     def _compose(self, fs, compose_cmd="stop"):
         if fs.kind == 'container':
@@ -475,6 +553,7 @@ class ZfsParser:
             help='avaiable commands')
         self.parser_autosnap(self.subparsers)
         self.parser_moved(self.subparsers)
+        self.parser_move(self.subparsers)
         self.parser_start(self.subparsers)
         self.parser_stop(self.subparsers)
         self.parser_backup(self.subparsers)
@@ -512,6 +591,13 @@ class ZfsParser:
         parser_moved.add_argument('item', nargs=1)
         parser_moved.set_defaults(command='moved')
 
+    def parser_move(self, subparsers):
+        parser_move = self.subparsers.add_parser(
+            'move',
+            help='move item to host mirror'
+        )
+        parser_move.add_argument('item', nargs=1)
+        parser_move.set_defaults(command='move')
 
     def parser_start(self, subparsers):
         parser_start = self.subparsers.add_parser(
