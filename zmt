@@ -52,6 +52,19 @@ class Filesystem:
     def __repr__(self):
         return self.longname
 
+    def __eq__(self, other):
+        if isinstance(other, self.__class__):
+            return self.__dict__ == other.__dict__
+        return NotImplemented
+
+    def __ne__(self, other):
+        if isinstance(other, self.__class__):
+            return not self.__eq__(other)
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(tuple(sorted(self.__dict__.items())))
+
 
 class ZfsTools:
     def __init__(self, args, config):
