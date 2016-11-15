@@ -204,12 +204,9 @@ class ZfsTools:
         now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
         snap_name = 'autosnap-%s' % now_string
 
-        if os.path.exists('/var/lib/zmt/autosnap/lock'):
-            print('other autosnap is running')
-            exit(0)
+        # check if other autosnap is running
+        subprocess.check_call('pgrep -v "zmt autosnap"', universal_newlines=True, shell=True)
 
-        cmd = 'touch /var/lib/zmt/autosnap/lock'
-        subprocess.check_call(cmd, universal_newlines=True, shell=True)
         # create the local snapshots
         for fs in fs_to_snap:
             cmd = 'zfs snap -r {zfs_main}/{fs}@{snap_name}'.format(
@@ -245,8 +242,6 @@ class ZfsTools:
             else:
                 if fs.host_mirror:
                     print("Mirror host is down, trying it next time")
-            cmd = 'rm /var/lib/zmt/autosnap/lock'
-            subprocess.check_call(cmd, universal_newlines=True, shell=True)
 
     def inspect(self):
         print('* config* ')
