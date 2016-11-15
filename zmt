@@ -205,7 +205,10 @@ class ZfsTools:
         snap_name = 'autosnap-%s' % now_string
 
         # check if other autosnap is running
-        subprocess.check_call('pgrep -v "zmt autosnap"', universal_newlines=True, shell=True)
+        subprocess.check_call(
+            'pgrep -v "zmt autosnap" > /dev/null',
+            universal_newlines=True, shell=True
+        )
 
         # create the local snapshots
         for fs in fs_to_snap:
