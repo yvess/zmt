@@ -349,6 +349,7 @@ zfs_main:{zfs_main}\n'''.format(
 
         if fs.kind == 'container':
             self._compose(fs, 'stop')
+            self._compose(fs, 'rm -f')
             self._autosnap(fs)
             self._moved(fs)
             self._zfs_exec('umount', fs)
