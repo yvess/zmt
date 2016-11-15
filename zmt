@@ -275,17 +275,18 @@ zfs_main:{zfs_main}\n'''.format(
             cmd, universal_newlines=True, shell=True
         )
 
-    def _zfs_exec(self, zfs_cmd, fs):
+    def _zfs_exec(self, zfs_cmd, fs, extra=""):
         cmd = 'zfs {zfs_cmd} {fs_main_fs}'.format(
-            zfs_cmd=zfs_cmd, fs_main_fs=fs.main_fs
+            zfs_cmd=zfs_cmd, fs_main_fs=fs.main_fs, extra=extra
         )
         subprocess.check_call(
             cmd, universal_newlines=True, shell=True
         )
 
-    def _zfs_mirror_exec(self, zfs_cmd, fs):
-        cmd = 'ssh {host_mirror} "zfs {zfs_cmd} {fs_main_fs}"'.format(
-            host_mirror=fs.host_mirror, zfs_cmd=zfs_cmd, fs_main_fs=fs.main_fs
+    def _zfs_mirror_exec(self, zfs_cmd, fs, extra=""):
+        cmd = 'ssh {host_mirror} "zfs {zfs_cmd} {fs_main_fs} {extra}"'.format(
+            host_mirror=fs.host_mirror, zfs_cmd=zfs_cmd,
+            fs_main_fs=fs.main_fs, extra=extra
         )
         subprocess.check_call(
             cmd, universal_newlines=True, shell=True
@@ -348,6 +349,7 @@ zfs_main:{zfs_main}\n'''.format(
         fs = self._to_filesystem(self.args.item)[0]
 
         if fs.kind == 'container':
+            self._zfs_mirror_exec('get -H -o value mounted', fs, extra='|grep -q no')
             self._compose(fs, 'stop')
             self._compose(fs, 'rm -f')
             self._autosnap(fs)
