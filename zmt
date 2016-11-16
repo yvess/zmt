@@ -72,6 +72,7 @@ class ZfsTools:
         self.config = config
         self.running = []
         self.managed_containers, self.managed_vms = [], []
+        self.zmt_path = os.path.abspath(sys.argv[0])
         if 'container' in self.config:
             self.managed_containers = self.config['container']['managed'].split(',')
         if 'vm' in self.config:
@@ -205,10 +206,26 @@ class ZfsTools:
         snap_name = 'autosnap-%s' % now_string
 
         # check if other autosnap is running
-        subprocess.check_call(
-            '[ $(pgrep -c -f "zmt autosnap") -eq 0 ]',
-            universal_newlines=True, shell=True
-        )
+        try:
+            eq_check = 1 if self.args.command == 'autosnap' else 0
+            subprocess.check_call(
+                'test $(pgrep -c -f "^python3 %s autosnap") -eq %s' % (self.zmt_path, eq_check),
+                universal_newlines=True, shell=True
+            )
+        except subprocess.CalledProcessError:
+            print("other autosnap is running, not autosnapping")
+            exit(0)
+
+        # check if a move is running
+        try:
+            eq_check = 1 if self.args.command == 'move' else 0
+            subprocess.check_call(
+                'test $(pgrep -c -f "^python3 %s move") -eq %s' % (self.zmt_path, eq_check),
+                universal_newlines=True, shell=True
+            )
+        except subprocess.CalledProcessError:
+            print("other move is running, not autosnapping")
+            exit(0)
 
         # create the local snapshots
         for fs in fs_to_snap:
@@ -272,9 +289,8 @@ zfs_main:{zfs_main}\n'''.format(
         return zfs_mountpoint
 
     def _zmt_mirror_exec(self, zmt_cmd, fs):
-        script_path = os.path.abspath(sys.argv[0])
         cmd = 'ssh {host_mirror} "{script_path} {zmt_cmd}"'.format(
-            host_mirror=fs.host_mirror, script_path=script_path,
+            host_mirror=fs.host_mirror, script_path=self.zmt_path,
             zmt_cmd=zmt_cmd
         )
         subprocess.check_call(
