@@ -372,6 +372,12 @@ zfs_main:{zfs_main}\n'''.format(
 
         if fs.kind == 'container':
             self._zfs_mirror_exec('get -H -o value mounted', fs, extra='|grep -q no')
+            try:
+                # check for open files/dirs, would break unmount
+                subprocess.check_call('! lsof -w|grep /tank/docker/%s' % fs.name, shell=True)
+            except subprocess.CalledProcessError:
+                print("stopping, the directory is /tank/docker/%s is in use" % fs.name)
+                exit(0)
             self._compose(fs, 'stop')
             self._compose(fs, 'rm -f')
             self._autosnap(fs)
