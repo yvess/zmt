@@ -120,13 +120,16 @@ class ZfsTools:
         else:
             return []
 
-    def _get_inc_from_file(self, snap_fname, inc_as_stream=False):
+    def _get_last_snap_from_file(self, snap_fname):
         snap_fname = '/var/lib/zmt/%s' % snap_fname
-        inc = ''
         if os.path.exists(snap_fname):
             with open(snap_fname) as last_snap_f:
                 last_snap = last_snap_f.read().strip()
-                inc = ('-I @%s' if inc_as_stream else '-i @%s') % last_snap
+            return last_snap
+
+    def _get_inc_from_file(self, snap_fname, inc_as_stream=False):
+        last_snap = self._get_last_snap_from_file(snap_fname)
+        inc = ('-I @%s' if inc_as_stream else '-i @%s') % last_snap
         return inc
 
     def _get_last_snap_from_zfs(self, fs):
@@ -355,6 +358,7 @@ zfs_main:{zfs_main}\n'''.format(
             self._compose(fs, 'stop')
 
     def move(self):
+        # pre checks
         if not self.args.item:
             print('No vm/container specified')
             exit(0)
@@ -366,18 +370,28 @@ zfs_main:{zfs_main}\n'''.format(
             exit(0)
 
         if fs not in self.running:
-            print('The filesystem must be used for automatic moving')
+            print('The filesystem must be in use for automatic moving')
             exit(0)
         fs = self._to_filesystem(self.args.item)[0]
 
         if fs.kind == 'container':
+            # container pre checks
             self._zfs_mirror_exec('get -H -o value mounted', fs, extra='|grep -q no')
+            last_inc = self._get_last_snap_from_file('autosnap/%s' % fs.longname)
+            try:
+                self._zfs_mirror_exec('list -H -o name -r -d 1 -t snap', fs, extra='|grep -q %s' % last_inc)
+            except subprocess.CalledProcessError:
+                print("""stopping move, the previous autosnap (%s) \
+does't exists on the target remote filesystem""" % last_inc)
+                exit(0)
             try:
                 # check for open files/dirs, would break unmount
                 subprocess.check_call('! lsof -w|grep /tank/docker/%s' % fs.name, shell=True)
             except subprocess.CalledProcessError:
-                print("stopping, the directory is /tank/docker/%s is in use" % fs.name)
+                print("stopping move, the directory /tank/docker/%s is in use" % fs.name)
                 exit(0)
+
+            # doing the move all checks passed
             self._compose(fs, 'stop')
             self._compose(fs, 'rm -f')
             self._autosnap(fs)
