@@ -206,7 +206,7 @@ class ZfsTools:
 
         # check if other autosnap is running
         subprocess.check_call(
-            'pgrep -v "zmt autosnap" > /dev/null',
+            '[ $(pgrep -c -f "zmt autosnap") -eq 0 ]',
             universal_newlines=True, shell=True
         )
 
