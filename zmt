@@ -618,110 +618,110 @@ class ZfsParser:
             print('command %s not known' % args.command)
 
     def parser_autosnap(self, subparsers):
-        parser_autosnap = self.subparsers.add_parser(
+        parser = self.subparsers.add_parser(
             'autosnap',
             help='create a snapshot'
         )
-        parser_autosnap.add_argument('items', nargs='*', default=None)
-        parser_autosnap.set_defaults(command='autosnap')
+        parser.add_argument('items', nargs='*', default=None)
+        parser.set_defaults(command='autosnap')
 
     def parser_activate(self, subparsers):
-        parser_activate = self.subparsers.add_parser(
+        parser = self.subparsers.add_parser(
             'activate',
             help='write latest autosnap to /var/lib/zmt/autosnap'
         )
-        parser_activate.add_argument('item', nargs=1)
-        parser_activate.set_defaults(command='activate')
+        parser.add_argument('item', nargs=1)
+        parser.set_defaults(command='activate')
 
     def parser_deactivate(self, subparsers):
-        parser_deactivate = self.subparsers.add_parser(
+        parser = self.subparsers.add_parser(
             'deactivate',
             help='remote latest autosnap file from /var/lib/zmt/autosnap'
         )
-        parser_deactivate.add_argument('item', nargs=1)
-        parser_deactivate.set_defaults(command='deactivate')
+        parser.add_argument('item', nargs=1)
+        parser.set_defaults(command='deactivate')
 
     def parser_move(self, subparsers):
-        parser_move = self.subparsers.add_parser(
+        parser = self.subparsers.add_parser(
             'move',
             help='move item to host mirror'
         )
-        parser_move.add_argument('item', nargs=1)
-        parser_move.set_defaults(command='move')
+        parser.add_argument('item', nargs=1)
+        parser.set_defaults(command='move')
 
     def parser_start(self, subparsers):
-        parser_start = self.subparsers.add_parser(
+        parser = self.subparsers.add_parser(
             'start',
             help='start container/or vm'
         )
-        parser_start.add_argument('item', nargs=1)
-        parser_start.set_defaults(command='start')
+        parser.add_argument('item', nargs=1)
+        parser.set_defaults(command='start')
 
     def parser_stop(self, subparsers):
-        parser_stop = self.subparsers.add_parser(
+        parser = self.subparsers.add_parser(
             'stop',
             help='stop container/or vm'
         )
-        parser_stop.add_argument('item', nargs=1)
-        parser_stop.set_defaults(command='stop')
+        parser.add_argument('item', nargs=1)
+        parser.set_defaults(command='stop')
 
     def parser_backup(self, subparsers):
-        parser_backup = self.subparsers.add_parser(
+        parser = self.subparsers.add_parser(
             'backup',
             help='create a backup'
         )
-        parser_backup.add_argument(
+        parser.add_argument(
             '-t', '--test', dest='test', action='store_true',
             default=False, help='only show zfs commands and exit'
         )
-        parser_backup.add_argument(
+        parser.add_argument(
             '-s', '--snap-name', dest='backup_snap_name', action='store',
             default='', help=''
         )
-        parser_backup.add_argument('items', nargs='*', default=None)
-        parser_backup.set_defaults(command='backup')
+        parser.add_argument('items', nargs='*', default=None)
+        parser.set_defaults(command='backup')
 
     def parser_cleanup(self, subparsers):
-        parser_cleanup = self.subparsers.add_parser(
+        parser = self.subparsers.add_parser(
             'cleanup',
             help='only keep the N recent snapshots'
         )
-        parser_cleanup.add_argument(
+        parser.add_argument(
             '-v', dest='verbose', const=' -v ', action='store_const',
             default='', help='verbose'
         )
-        parser_cleanup.add_argument(
+        parser.add_argument(
             '-n', dest='dry_run', const=' -n ', action='store_const',
             default='', help='dry-run'
         )
-        parser_cleanup.add_argument(
+        parser.add_argument(
             '--no-tank-destroy', dest='tank_destroy', action='store_false',
             default=True, help="only delete backup snapshos, don't touch tank"
         )
-        parser_cleanup.set_defaults(command='cleanup')
+        parser.set_defaults(command='cleanup')
 
     def parser_rsync(self, subparsers):
-        parser_rsync = self.subparsers.add_parser(
+        parser = self.subparsers.add_parser(
             'rsync',
             help='only keep the N recent snapshots'
         )
-        parser_rsync.add_argument('host', nargs='?', default=None)
-        parser_rsync.add_argument(
+        parser.add_argument('host', nargs='?', default=None)
+        parser.add_argument(
             '-v', dest='verbose', const='-v ', action='store_const',
             default='', help='verbose'
         )
-        parser_rsync.add_argument(
+        parser.add_argument(
             '-n', dest='dry_run', const='-n ', action='store_const',
             default='', help='dry-run'
         )
-        parser_rsync.set_defaults(command='rsync')
+        parser.set_defaults(command='rsync')
 
     def parser_inspect(self, subparsers):
-        parser_inspect = self.subparsers.add_parser(
+        parser = self.subparsers.add_parser(
             'inspect',
             help='inspect zmt'
         )
-        parser_inspect.set_defaults(command='inspect')
+        parser.set_defaults(command='inspect')
 
 
 def main():
