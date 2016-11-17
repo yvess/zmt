@@ -317,57 +317,53 @@ zfs_main:{zfs_main}\n'''.format(
             cmd, universal_newlines=True, shell=True
         )
 
-    def moved(self):
+    def _item_to_fs(self):
         if not self.args.item:
             print('No vm/container specified')
             exit(0)
-        else:
+        try:
             fs = self._to_filesystem(self.args.item)[0]
-        self._moved(fs)
+        except UnboundLocalError:
+            print("The filesystem doesn't exists")
+            exit(0)
+        return fs
 
-    def _moved(self, fs):
+    def activate(self):
+        fs = self._item_to_fs()
+        self._activate(fs)
+
+    def _activate(self, fs):
+        # write last autosnap from last zfs snaphost
+        self._write_snap_file(
+            'autosnap/%s' % fs.longname, self._get_last_snap_from_zfs(fs)
+        )
+
+    def deactivate(self):
+        fs = self._item_to_fs()
+        self._deactivate(fs)
+
+    def _deactivate(self, fs):
         snap_path = self._get_snap_file_path(fs)
         if os.path.exists(snap_path):
             # remove /var/lib/zmt/autosnap file
             if fs not in self.running:
                 os.remove(snap_path)
-        else:
-            # write last autosnap from last zfs snaphost
-            self._write_snap_file(
-                'autosnap/%s' % fs.longname, self._get_last_snap_from_zfs(fs)
-            )
 
     def start(self):
-        if not self.args.item:
-            print('No vm/container specified')
-            exit(0)
-        else:
-            fs = self._to_filesystem(self.args.item)[0]
+        fs = self._item_to_fs()
 
         if fs.kind == 'container':
             self._compose(fs, 'up -d')
 
     def stop(self):
-        if not self.args.item:
-            print('No vm/container specified')
-            exit(0)
-        else:
-            fs = self._to_filesystem(self.args.item)[0]
+        fs = self._item_to_fs()
 
         if fs.kind == 'container':
             self._compose(fs, 'stop')
 
     def move(self):
         # pre checks
-        if not self.args.item:
-            print('No vm/container specified')
-            exit(0)
-
-        try:
-            fs = self._to_filesystem(self.args.item)[0]
-        except UnboundLocalError:
-            print("The filesystem doesn't exists")
-            exit(0)
+        fs = self._item_to_fs()
 
         if fs not in self.running:
             print('The filesystem must be in use for automatic moving')
@@ -395,10 +391,10 @@ does't exists on the target remote filesystem""" % last_inc)
             self._compose(fs, 'stop')
             self._compose(fs, 'rm -f')
             self._autosnap(fs)
-            self._moved(fs)
+            self._deactivate(fs)
             self._zfs_exec('umount', fs)
             self._zfs_mirror_exec('mount', fs)
-            self._zmt_mirror_exec("moved %s" % fs.longname, fs)
+            self._zmt_mirror_exec("activate %s" % fs.longname, fs)
             self._zmt_mirror_exec("start %s" % fs.longname, fs)
 
     def _compose(self, fs, compose_cmd="stop"):
@@ -597,7 +593,8 @@ class ZfsParser:
         self.subparsers = self.parser.add_subparsers(
             help='avaiable commands')
         self.parser_autosnap(self.subparsers)
-        self.parser_moved(self.subparsers)
+        self.parser_activate(self.subparsers)
+        self.parser_deactivate(self.subparsers)
         self.parser_move(self.subparsers)
         self.parser_start(self.subparsers)
         self.parser_stop(self.subparsers)
@@ -628,13 +625,21 @@ class ZfsParser:
         parser_autosnap.add_argument('items', nargs='*', default=None)
         parser_autosnap.set_defaults(command='autosnap')
 
-    def parser_moved(self, subparsers):
-        parser_moved = self.subparsers.add_parser(
-            'moved',
-            help='set autosnap file to last snapshot'
+    def parser_activate(self, subparsers):
+        parser_activate = self.subparsers.add_parser(
+            'activate',
+            help='write latest autosnap to /var/lib/zmt/autosnap'
         )
-        parser_moved.add_argument('item', nargs=1)
-        parser_moved.set_defaults(command='moved')
+        parser_activate.add_argument('item', nargs=1)
+        parser_activate.set_defaults(command='activate')
+
+    def parser_deactivate(self, subparsers):
+        parser_deactivate = self.subparsers.add_parser(
+            'deactivate',
+            help='remote latest autosnap file from /var/lib/zmt/autosnap'
+        )
+        parser_deactivate.add_argument('item', nargs=1)
+        parser_deactivate.set_defaults(command='deactivate')
 
     def parser_move(self, subparsers):
         parser_move = self.subparsers.add_parser(
