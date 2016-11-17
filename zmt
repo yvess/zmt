@@ -87,8 +87,6 @@ class ZfsTools:
         self.running = self._get_running_vms() + self._get_running_containers()
 
     def _make_running_list(self, items, managed_items, kind='vm'):
-        if kind == 'container':
-            managed_items = [item.replace('_', '') for item in managed_items]
         running_items = [
             Filesystem(item, kind, self.config)
             for item in items
