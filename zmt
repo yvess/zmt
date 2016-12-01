@@ -562,16 +562,16 @@ does't exists on the target remote filesystem""" % last_inc)
                             subprocess.check_call(
                                 cmd.split(' '), universal_newlines=True
                             )
-                            cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(
+                            snap_cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(
                                 zfs_backup=self.config['rsync']['zfs_backup'],
                                 fs=fs, name='autosnap-%s' % now_string
                             )
                             if verbose:
-                                print("* zfs snap rsync with command:\n  %s" % cmd)
+                                print("* zfs snap rsync with command:\n  %s" % snap_cmd)
                             if dry_run:
                                 print("* zfs snap rsync not done, in dry-run mode")
                             else:
-                                subprocess.check_call(cmd, shell=True)
+                                subprocess.check_call(snap_cmd, shell=True)
                         except:
                             failures += traceback.format_exc()
                             current_failure_tries -= 1
@@ -703,7 +703,7 @@ class ZfsParser:
     def parser_rsync(self, subparsers):
         parser = self.subparsers.add_parser(
             'rsync',
-            help='only keep the N recent snapshots'
+            help='make rsync backups with snapshots'
         )
         parser.add_argument('host', nargs='?', default=None)
         parser.add_argument(
@@ -712,7 +712,7 @@ class ZfsParser:
         )
         parser.add_argument(
             '-n', dest='dry_run', const='-n ', action='store_const',
-            default='', help='dry-run'
+            default='', help='dry-run, no snapshots'
         )
         parser.set_defaults(command='rsync')
 
