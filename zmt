@@ -584,6 +584,36 @@ does't exists on the target remote filesystem""" % last_inc)
             print(failures)
             sys.exit(1)
 
+    def scripts(self):
+        if self.args.item:
+            scripts_items = [(
+                self.args.item, self.config['scripts_items'][self.args.item]
+            )]
+        else:
+            scripts_items = self.config.items('scripts_items')
+        now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
+        verbose, dry_run = self.args.verbose, self.args.dry_run
+
+        outputs = []
+        for fs, script_cmd in scripts_items:
+            output = subprocess.check_output(
+                script_cmd.split(' '), universal_newlines=True
+            )
+            if output:
+                outputs.append("\n\n%s:%s\n%s" % (fs, script_cmd, output))
+            snap_cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(
+                zfs_backup=self.config['scripts']['zfs_backup'],
+                fs=fs, name='autosnap-%s' % now_string
+            )
+            if verbose:
+                print("* executing script:\n  %s" % script_cmd)
+            if dry_run:
+                print("* zfs snap not done, in dry-run mode")
+            else:
+                subprocess.check_call(snap_cmd, shell=True)
+        if outputs:
+            print("\n".join(outputs))
+
 
 class ZfsParser:
     def __init__(self):
@@ -601,6 +631,7 @@ class ZfsParser:
         self.parser_backup(self.subparsers)
         self.parser_cleanup(self.subparsers)
         self.parser_rsync(self.subparsers)
+        self.parser_scripts(self.subparsers)
         self.parser_inspect(self.subparsers)
         self.config = configparser.ConfigParser()
         self.config.read('/etc/zmt/zmt.ini')
@@ -715,6 +746,22 @@ class ZfsParser:
             default='', help='dry-run, no snapshots'
         )
         parser.set_defaults(command='rsync')
+
+    def parser_scripts(self, subparsers):
+        parser = self.subparsers.add_parser(
+            'scripts',
+            help='execute a script and make afterwards a snapshot'
+        )
+        parser.add_argument('item', nargs='?', default=None)
+        parser.add_argument(
+            '-v', dest='verbose', const='-v ', action='store_const',
+            default='', help='verbose'
+        )
+        parser.add_argument(
+            '-n', dest='dry_run', const='-n ', action='store_const',
+            default='', help='dry-run, only execute script(s) no snapshot'
+        )
+        parser.set_defaults(command='scripts')
 
     def parser_inspect(self, subparsers):
         parser = self.subparsers.add_parser(
