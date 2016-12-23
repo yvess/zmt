@@ -506,16 +506,28 @@ does't exists on the target remote filesystem""" % last_inc)
 
     def cleanup(self):
         for fs in self.managed_fs:
-            # normal snaps
+            # normal autosnaps
             if self.args.tank_destroy:
                 snaps = self._list_snaps(fs.zfs_main, fs.name)
                 if len(snaps) > fs.autosnaps_keep:
                     self._destroy_snaps(snaps, fs.autosnaps_keep)
 
-            # backup snaps
+            # normal backup snaps
             backupsnaps = self._list_snaps(fs.zfs_backup, fs.name)
             if len(backupsnaps) > fs.backupsnaps_keep:
                 self._destroy_snaps(backupsnaps, fs.backupsnaps_keep)
+
+        # rsync backup snaps
+        for fs_name, host_src in self.config.items('rsync_hosts'):
+            backupsnaps = self._list_snaps(self.config['rsync']['zfs_backup'], fs_name)
+            backupsnaps_keep = int(self.config['defaults']['backupsnaps_keep'])
+            if ('backupsnaps_keep_%s' % fs_name) in self.config['rsync']:
+                backupsnaps_keep = int(self.config['rsync']['backupsnaps_keep_%s' % fs_name])
+            elif 'backupsnaps_keep' in self.config['rsync']:
+                backupsnaps_keep = int(self.config['rsync']['backupsnaps_keep'])
+
+            if len(backupsnaps) > backupsnaps_keep:
+                self._destroy_snaps(backupsnaps, backupsnaps_keep)
 
     def rsync(self):
         if self.args.host:
