@@ -31,7 +31,9 @@ class Filesystem:
             self.autosnaps_keep = int(config[kind]['autosnaps_keep'])
 
         self.backupsnaps_keep = int(config['defaults']['backupsnaps_keep'])
-        if 'backupsnaps_keep' in config[kind]:
+        if ('backupsnaps_keep_%s' % self.name) in config[kind]:
+            self.backupsnaps_keep = int(config[kind]['backupsnaps_keep_%s' % self.name])
+        elif 'backupsnaps_keep' in config[kind]:
             self.backupsnaps_keep = int(config[kind]['backupsnaps_keep'])
 
     @property
