@@ -7,6 +7,7 @@ import configparser
 import os
 import sys
 import traceback
+import inspect
 from datetime import datetime
 from collections import OrderedDict
 
@@ -47,6 +48,18 @@ class Filesystem:
     @property
     def backup_fs(self):
         return "%s/%s" % (self.zfs_backup, self.name)
+
+    def mount(self):
+        cmd = 'zfs list -o name -H -r %s' % self.main_fs
+        fs_childs = subprocess.check_output(cmd.split(' '), universal_newlines=True).splitlines()
+        for fs in fs_childs:
+            subprocess.check_call(['zfs', 'mount', '%s' % fs], universal_newlines=True)
+
+    def umount(self):
+        cmd = 'zfs list -o name -H -r %s' % self.main_fs
+        fs_childs = subprocess.check_output(cmd.split(' '), universal_newlines=True).splitlines()
+        for fs in reversed(fs_childs):
+            subprocess.check_call(['zfs', 'umount', '%s' % fs], universal_newlines=True)
 
     def __str__(self):
         return self.longname
@@ -351,17 +364,42 @@ zfs_main:{zfs_main}\n'''.format(
             if fs not in self.running:
                 os.remove(snap_path)
 
-    def start(self):
-        fs = self._item_to_fs()
+    def _get_autosnap_fs(self):
+        return self._to_filesystem(os.listdir('/var/lib/zmt/autosnap'))
 
-        if fs.kind == 'container':
-            self._compose(fs, 'up -d')
+    def mount(self):
+        items = self._get_autosnap_fs()
+        for item in items:
+            item.mount()
+
+    def umount(self):
+        items = self._get_autosnap_fs()
+        for item in items:
+            item.umount()
+
+    def start(self):
+        if self.args.item:
+            all_fs = [self._item_to_fs()]
+        else:
+            all_fs = self._get_autosnap_fs()
+
+        for fs in all_fs:
+            if fs.kind == 'container':
+                self._compose(fs, 'up -d')
+            if fs.kind == 'vm':
+                self._virsh(fs, 'start')
 
     def stop(self):
-        fs = self._item_to_fs()
+        if self.args.item:
+            all_fs = [self._item_to_fs()]
+        else:
+            all_fs = self._get_autosnap_fs()
 
-        if fs.kind == 'container':
-            self._compose(fs, 'stop')
+        for fs in all_fs:
+            if fs.kind == 'container':
+                self._compose(fs, 'stop')
+            if fs.kind == 'vm':
+                self._virsh(fs, 'shutdown')
 
     def move(self):
         # pre checks
@@ -410,6 +448,12 @@ does't exists on the target remote filesystem""" % last_inc)
             subprocess.check_call(
                 cmd.split(' '), universal_newlines=True, cwd=zfs_mountpoint
             )
+        self._update_running()
+
+    def _virsh(self, fs, virsh_cmd="start"):
+        if fs.kind == 'vm':
+            cmd = 'virsh %s %s' % (virsh_cmd, fs.name)
+            subprocess.check_call(cmd.split(' '), universal_newlines=True)
         self._update_running()
 
     def _get_backup_snap_names(self, snap_names):
@@ -636,17 +680,10 @@ class ZfsParser:
                            for snapshoting, replication, backup""")
         self.subparsers = self.parser.add_subparsers(
             help='avaiable commands')
-        self.parser_autosnap(self.subparsers)
-        self.parser_activate(self.subparsers)
-        self.parser_deactivate(self.subparsers)
-        self.parser_move(self.subparsers)
-        self.parser_start(self.subparsers)
-        self.parser_stop(self.subparsers)
-        self.parser_backup(self.subparsers)
-        self.parser_cleanup(self.subparsers)
-        self.parser_rsync(self.subparsers)
-        self.parser_scripts(self.subparsers)
-        self.parser_inspect(self.subparsers)
+        for (fname, func) in inspect.getmembers(self, predicate=inspect.ismethod):
+            if fname.startswith('parser_'):
+                func(self.subparsers)
+
         self.config = configparser.ConfigParser()
         self.config.read('/etc/zmt/zmt.ini')
 
@@ -697,9 +734,12 @@ class ZfsParser:
     def parser_start(self, subparsers):
         parser = self.subparsers.add_parser(
             'start',
-            help='start container/or vm'
+            help='start one or all container/or vm'
         )
-        parser.add_argument('item', nargs=1)
+        parser.add_argument(
+            'item', nargs='?', default=None,
+            help="without argument starts all container/vms"
+        )
         parser.set_defaults(command='start')
 
     def parser_stop(self, subparsers):
@@ -707,7 +747,10 @@ class ZfsParser:
             'stop',
             help='stop container/or vm'
         )
-        parser.add_argument('item', nargs=1)
+        parser.add_argument(
+            'item', nargs='?', default=None,
+            help="without argument stops all container/vms"
+        )
         parser.set_defaults(command='stop')
 
     def parser_backup(self, subparsers):
@@ -760,6 +803,28 @@ class ZfsParser:
             default='', help='dry-run, no snapshots'
         )
         parser.set_defaults(command='rsync')
+
+    def parser_mount(self, subparsers):
+        parser = self.subparsers.add_parser(
+            'mount',
+            help='mount active filesystems on host'
+        )
+        parser.add_argument(
+            '-v', dest='verbose', const='-v ', action='store_const',
+            default='', help='verbose'
+        )
+        parser.set_defaults(command='mount')
+
+    def parser_umount(self, subparsers):
+        parser = self.subparsers.add_parser(
+            'umount',
+            help='umount active filesystems on host'
+        )
+        parser.add_argument(
+            '-v', dest='verbose', const='-v ', action='store_const',
+            default='', help='verbose'
+        )
+        parser.set_defaults(command='umount')
 
     def parser_scripts(self, subparsers):
         parser = self.subparsers.add_parser(
