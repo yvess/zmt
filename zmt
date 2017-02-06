@@ -407,40 +407,47 @@ zfs_main:{zfs_main}\n'''.format(
                 self._virsh(fs, 'shutdown')
 
     def move(self):
-        # pre checks
-        fs = self._item_to_fs()
-
-        if fs not in self.running:
-            print('The filesystem must be in use for automatic moving')
-            exit(0)
-        fs = self._to_filesystem(self.args.item)[0]
-
-        if fs.kind == 'container':
-            # container pre checks
-            self._zfs_mirror_exec('get -H -o value mounted', fs, extra='|grep -q no')
-            last_inc = self._get_last_snap_from_file('autosnap/%s' % fs.longname)
-            try:
-                self._zfs_mirror_exec('list -H -o name -r -d 1 -t snap', fs, extra='|grep -q %s' % last_inc)
-            except subprocess.CalledProcessError:
-                print("""stopping move, the previous autosnap (%s) \
-does't exists on the target remote filesystem""" % last_inc)
+        if self.args.item:
+            fs = self._item_to_fs()
+            if fs not in self.running:
+                print('The filesystem must be in use for automatic moving')
                 exit(0)
-            try:
-                # check for open files/dirs, would break unmount
-                subprocess.check_call('! lsof -w|grep /tank/docker/%s' % fs.name, shell=True)
-            except subprocess.CalledProcessError:
-                print("stopping move, the directory /tank/docker/%s is in use" % fs.name)
+            all_fs = [fs]
+        else:
+            all_fs = self.running
+            if self.args.kind:
+                all_fs = [fs for fs in all_fs if fs.kind == self.args.kind]
+            if not all_fs:
+                print('No running container/vm found')
                 exit(0)
 
-            # doing the move all checks passed
-            self._compose(fs, 'stop')
-            self._compose(fs, 'rm -f')
-            self._autosnap(fs)
-            self._deactivate(fs)
-            self._zfs_exec('umount', fs)
-            self._zfs_mirror_exec('mount', fs)
-            self._zmt_mirror_exec("activate %s" % fs.longname, fs)
-            self._zmt_mirror_exec("start %s" % fs.longname, fs)
+        for fs in all_fs:
+            if fs.kind == 'container':
+                # container pre checks
+                self._zfs_mirror_exec('get -H -o value mounted', fs, extra='|grep -q no')
+                last_inc = self._get_last_snap_from_file('autosnap/%s' % fs.longname)
+                try:
+                    self._zfs_mirror_exec('list -H -o name -r -d 1 -t snap', fs, extra='|grep -q %s' % last_inc)
+                except subprocess.CalledProcessError:
+                    print("""stopping move, the previous autosnap (%s) \
+    does't exists on the target remote filesystem""" % last_inc)
+                    exit(0)
+                try:
+                    # check for open files/dirs, would break unmount
+                    subprocess.check_call('! lsof -w|grep /tank/docker/%s' % fs.name, shell=True)
+                except subprocess.CalledProcessError:
+                    print("stopping move, the directory /tank/docker/%s is in use" % fs.name)
+                    exit(0)
+
+                # doing the move all checks passed
+                self._compose(fs, self.args.cmd_stop)
+                self._compose(fs, 'rm -f')
+                self._autosnap(fs)
+                self._deactivate(fs)
+                self._zfs_exec('umount', fs)
+                self._zfs_mirror_exec('mount', fs)
+                self._zmt_mirror_exec("activate %s" % fs.longname, fs)
+                self._zmt_mirror_exec("start %s" % fs.longname, fs)
 
     def _compose(self, fs, compose_cmd="stop"):
         if fs.kind == 'container':
@@ -733,7 +740,23 @@ class ZfsParser:
             'move',
             help='move item to host mirror'
         )
-        parser.add_argument('item', nargs=1)
+        parser.add_argument(
+            'item', nargs='?', default=None,
+            help="without argument moves all container/vms"
+        )
+        parser.add_argument(
+            '--kill', dest='cmd_stop', action='store_const', const='kill',
+            default='stop', help='use kill instead of stop for shutdown'
+        )
+        group = parser.add_mutually_exclusive_group()
+        group.add_argument(
+            '--container', dest='kind', action='store_const', const='container',
+            default='', help='only move containers'
+        )
+        group.add_argument(
+            '--vm', dest='kind', action='store_const', const='vm',
+            default='', help='only move vms (not implemented yet)'
+        )
         parser.set_defaults(command='move')
 
     def parser_start(self, subparsers):
