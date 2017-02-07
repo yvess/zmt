@@ -338,11 +338,14 @@ zfs_main:{zfs_main}\n'''.format(
         )
 
     def _item_to_fs(self):
-        if not self.args.item:
+        item = self.args.item
+        if not item:
             print('No vm/container specified')
             exit(0)
         try:
-            fs = self._to_filesystem(self.args.item)[0]
+            if not isinstance(item, (list, tuple)):
+                item = [item]
+            fs = self._to_filesystem(item)[0]
         except UnboundLocalError:
             print("The filesystem doesn't exists")
             exit(0)
