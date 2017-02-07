@@ -401,10 +401,15 @@ zfs_main:{zfs_main}\n'''.format(
             all_fs = self._get_autosnap_fs()
 
         for fs in all_fs:
+            commands = {
+                'container': {'stop': 'stop', 'kill': 'kill'},
+                'vm': {'stop': 'shutdown', 'kill': 'destroy'},
+            }
+            cmd = commands[fs.kind][self.args.cmd_stop]
             if fs.kind == 'container':
-                self._compose(fs, 'stop')
+                self._compose(fs, cmd)
             if fs.kind == 'vm':
-                self._virsh(fs, 'shutdown')
+                self._virsh(fs, cmd)
 
     def move(self):
         if self.args.item:
@@ -778,6 +783,10 @@ class ZfsParser:
         parser.add_argument(
             'item', nargs='?', default=None,
             help="without argument stops all container/vms"
+        )
+        parser.add_argument(
+            '--kill', dest='cmd_stop', action='store_const', const='kill',
+            default='stop', help='use kill instead of stop for shutdown'
         )
         parser.set_defaults(command='stop')
 
