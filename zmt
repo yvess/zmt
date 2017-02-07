@@ -386,7 +386,7 @@ zfs_main:{zfs_main}\n'''.format(
             item.umount()
 
     def start(self):
-        if self.args.item:
+        if 'item' in self.args and self.args.item:
             all_fs = [self._item_to_fs()]
         else:
             all_fs = self._get_autosnap_fs()
@@ -396,6 +396,10 @@ zfs_main:{zfs_main}\n'''.format(
                 self._compose(fs, 'up -d')
             if fs.kind == 'vm':
                 self._virsh(fs, 'start')
+
+    def autostart(self):
+        self.mount()
+        self.start()
 
     def stop(self):
         if self.args.item:
@@ -777,6 +781,13 @@ class ZfsParser:
             help="without argument starts all container/vms"
         )
         parser.set_defaults(command='start')
+
+    def parser_autostart(self, subparsers):
+        parser = self.subparsers.add_parser(
+            'autostart',
+            help='mount and start all containers/vms'
+        )
+        parser.set_defaults(command='autostart')
 
     def parser_stop(self, subparsers):
         parser = self.subparsers.add_parser(
