@@ -10,12 +10,34 @@ import traceback
 import inspect
 from datetime import datetime
 from collections import OrderedDict
+import asyncio
+from asyncio.subprocess import PIPE
 
 AUTOSNAP_DATESTR = '%Y-%m-%d_%H:%M:%S'
 
 
+class Cmd:
+    def output(self, cmd, async=False, shell=False, split=True, **kwargs):
+        if not shell:
+            cmd = cmd.split(' ')
+        output = subprocess.check_output(
+            cmd,
+            universal_newlines=True, shell=shell
+        )
+        if split:
+            return output.splitlines()
+        else:
+            return output.strip()
+
+    def call(self, cmd, async=False, shell=False, cwd=None):
+        if not shell:
+            cmd = cmd.split(' ')
+        subprocess.check_call(cmd, universal_newlines=True, shell=shell, cwd=cwd)
+
+
 class Filesystem:
     def __init__(self, name, kind='vm', config=None):
+        self._cmd = Cmd()
         self.name = name.strip()
         self.kind = kind
         self.zfs_main = config[kind]['zfs_main']
@@ -50,16 +72,14 @@ class Filesystem:
         return "%s/%s" % (self.zfs_backup, self.name)
 
     def mount(self):
-        cmd = 'zfs list -o name -H -r %s' % self.main_fs
-        fs_childs = subprocess.check_output(cmd.split(' '), universal_newlines=True).splitlines()
+        fs_childs = self._cmd.output('zfs list -o name -H -r %s' % self.main_fs)
         for fs in fs_childs:
-            subprocess.check_call(['zfs', 'mount', '%s' % fs], universal_newlines=True)
+            self._cmd.call('zfs mount %s' % fs)
 
     def umount(self):
-        cmd = 'zfs list -o name -H -r %s' % self.main_fs
-        fs_childs = subprocess.check_output(cmd.split(' '), universal_newlines=True).splitlines()
+        fs_childs = self._cmd.output('zfs list -o name -H -r %s' % self.main_fs)
         for fs in reversed(fs_childs):
-            subprocess.check_call(['zfs', 'umount', '%s' % fs], universal_newlines=True)
+            self._cmd.call('zfs umount %s' % fs)
 
     def __str__(self):
         return self.longname
@@ -69,7 +89,9 @@ class Filesystem:
 
     def __eq__(self, other):
         if isinstance(other, self.__class__):
-            return self.__dict__ == other.__dict__
+            def filter(d):
+                return {k: v for k, v in d.items() if k in ['kind', 'name']}
+            return filter(self.__dict__) == filter(other.__dict__)
         return NotImplemented
 
     def __ne__(self, other):
@@ -83,6 +105,7 @@ class Filesystem:
 
 class ZfsTools:
     def __init__(self, args, config):
+        self._cmd = Cmd()
         self.args = args
         self.config = config
         self.running = []
@@ -98,8 +121,29 @@ class ZfsTools:
         )
         self._update_running()
 
+    def _all_autosnap_fs(self):
+        if 'item' in self.args and self.args.item:
+            all_fs = [self._item_to_fs()]
+        else:
+            all_fs = self._autosnap_fs()
+        return all_fs
+
+    def _item_to_fs(self):
+        item = self.args.item
+        if not item:
+            print('No vm/container specified')
+            exit(0)
+        try:
+            if not isinstance(item, (list, tuple)):
+                item = [item]
+            fs = self._to_filesystem(item)[0]
+        except UnboundLocalError:
+            print("The filesystem doesn't exists")
+            exit(0)
+        return fs
+
     def _update_running(self):
-        self.running = self._get_running_vms() + self._get_running_containers()
+        self.running = self._running_vms() + self._running_containers()
 
     def _make_running_list(self, items, managed_items, kind='vm'):
         running_items = [
@@ -109,33 +153,25 @@ class ZfsTools:
         ]
         return running_items
 
-    def _get_running_vms(self):
-        running_vms = subprocess.check_output(
-            'virsh list --name',
-            universal_newlines=True, shell=True
-        ).splitlines()
+    def _running_vms(self):
+        running_vms = self._cmd.output('virsh list --name')
         return self._make_running_list(
             running_vms, self.managed_vms, kind='vm'
         )
 
-    def _get_running_containers(self):
-        has_running_containers = subprocess.check_output(
-            'docker ps -q',
-            universal_newlines=True, shell=True
-        ).splitlines()
+    def _running_containers(self):
+        has_running_containers = self._cmd.output('docker ps -q')
         if has_running_containers:
-            running_containers = subprocess.check_output(
-                'docker ps -q|xargs docker inspect --format "{{.Name}}"|\
-                 grep -oP "(?<=^/)[a-zA-Z0-9]*(?=_.*)"|sort|uniq',
-                universal_newlines=True, shell=True
-            ).splitlines()
+            cmd = 'docker ps -q|xargs docker inspect --format "{{.Name}}"|' + \
+                  'grep -oP "(?<=^/)[a-zA-Z0-9]*(?=_.*)"|sort|uniq'
+            running_containers = self._cmd.output(cmd, shell=True)
             return self._make_running_list(
                 running_containers, self.managed_containers, kind='container'
             )
         else:
             return []
 
-    def _get_last_snap_from_file(self, snap_fname):
+    def _last_snap_from_file(self, snap_fname):
         snap_fname = '/var/lib/zmt/%s' % snap_fname
         if os.path.exists(snap_fname):
             with open(snap_fname) as last_snap_f:
@@ -144,29 +180,28 @@ class ZfsTools:
         else:
             return None
 
-    def _get_inc_from_file(self, snap_fname, inc_as_stream=False):
-        last_snap = self._get_last_snap_from_file(snap_fname)
+    def _inc_from_file(self, snap_fname, inc_as_stream=False):
+        last_snap = self._last_snap_from_file(snap_fname)
         if last_snap:
             inc = ('-I @%s' if inc_as_stream else '-i @%s') % last_snap
             return inc
         else:
             return ""
 
-    def _get_last_snap_from_zfs(self, fs):
+    def _last_snap_from_zfs(self, fs):
         # get all snapshots from tank
-        cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_main}/{fs}'.format(
-            fs=fs.name, zfs_main=fs.zfs_main
+        snap_names = self._cmd.output(
+            'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_main}/{fs}'.format(
+                fs=fs.name, zfs_main=fs.zfs_main
+            )
         )
-        snap_names = subprocess.check_output(
-            cmd, universal_newlines=True, shell=True
-        ).splitlines()
         if snap_names[0] and '@autosnap-' in snap_names[0]:
             return ''.join(snap_names[0].partition("@autosnap-")[1:])[1:]
         else:
             print("the last snapshot needs to be a autosnap snapshot from zmt")
             exit(1)
 
-    def _get_snap_file_path(self, fs, snap_type="autosnap"):
+    def _snap_file_path(self, fs, snap_type="autosnap"):
         snap_fname = '/var/lib/zmt/%s/%s' % (snap_type, fs.longname)
         return snap_fname
 
@@ -177,7 +212,7 @@ class ZfsTools:
         with open(snap_fname, 'w') as last_snap:
             last_snap.write(snap_name)
 
-    def _get_snap_name(self, fq_snap_name):
+    def _snap_name(self, fq_snap_name):
         return fq_snap_name.split('@')[1]
 
     def _host_is_up(self, host):
@@ -231,9 +266,9 @@ class ZfsTools:
         # check if other autosnap is running
         try:
             eq_check = 1 if self.args.command == 'autosnap' else 0
-            cmd = 'test $(pgrep -c -f "^python3 %s autosnap") -eq %s' % (self.zmt_path, eq_check)
-            subprocess.check_call(
-                cmd, universal_newlines=True, shell=True
+            self._cmd.call(
+                'test $(pgrep -c -f "^python3 %s autosnap") -eq %s' % (self.zmt_path, eq_check),
+                shell=True
             )
         except subprocess.CalledProcessError:
             print("other autosnap is running, not autosnapping")
@@ -242,9 +277,9 @@ class ZfsTools:
         # check if a move is running
         try:
             eq_check = 1 if self.args.command == 'move' else 0
-            subprocess.check_call(
+            self._cmd.call(
                 'test $(pgrep -c -f "^python3 %s move") -eq %s' % (self.zmt_path, eq_check),
-                universal_newlines=True, shell=True
+                shell=True
             )
         except subprocess.CalledProcessError:
             print("other move is running, not autosnapping")
@@ -252,10 +287,11 @@ class ZfsTools:
 
         # create the local snapshots
         for fs in fs_to_snap:
-            cmd = 'zfs snap -r {zfs_main}/{fs}@{snap_name}'.format(
-                zfs_main=fs.zfs_main, fs=fs.name, snap_name=snap_name
+            self._cmd.call(
+                'zfs snap -r {zfs_main}/{fs}@{snap_name}'.format(
+                    zfs_main=fs.zfs_main, fs=fs.name, snap_name=snap_name
+                )
             )
-            subprocess.check_call(cmd, universal_newlines=True, shell=True)
 
         host_mirros_up = {}
         # send all snapshots over ssh to the host_mirror
@@ -264,7 +300,7 @@ class ZfsTools:
                 is_up = self._host_is_up(fs.host_mirror)
                 host_mirros_up[fs.host_mirror] = is_up
             if fs.host_mirror and host_mirros_up[fs.host_mirror]:
-                last_inc = self._get_inc_from_file(
+                last_inc = self._inc_from_file(
                     'autosnap/%s' % fs.longname, inc_as_stream=True
                 )
 
@@ -274,8 +310,8 @@ class ZfsTools:
                     zfs_main=fs.zfs_main, fs=fs.name, host_mirror=fs.host_mirror,
                     inc=last_inc, snap_name=snap_name
                 )
-                subprocess.check_output(
-                    cmd, universal_newlines=True, shell=True
+                self._cmd.output(
+                    cmd, shell=True
                 )
 
                 # write last autosnap
@@ -304,52 +340,34 @@ zfs_main:{zfs_main}\n'''.format(
                 )
             )
 
-    def _get_fs_mountpoint(self, fs):
-        cmd = 'zfs get -H -o value mountpoint %s' % fs.main_fs
-        zfs_mountpoint = subprocess.check_output(
-            cmd.split(' '), universal_newlines=True
-        ).strip()
+    def _fs_mountpoint(self, fs):
+        zfs_mountpoint = self._cmd.output(
+            'zfs get -H -o value mountpoint %s' % fs.main_fs, split=False
+        )
         return zfs_mountpoint
 
     def _zmt_mirror_exec(self, zmt_cmd, fs):
-        cmd = 'ssh {host_mirror} "{script_path} {zmt_cmd}"'.format(
-            host_mirror=fs.host_mirror, script_path=self.zmt_path,
-            zmt_cmd=zmt_cmd
-        )
-        subprocess.check_call(
-            cmd, universal_newlines=True, shell=True
+        self._cmd.call(
+            'ssh {host_mirror} "{script_path} {zmt_cmd}"'.format(
+                host_mirror=fs.host_mirror, script_path=self.zmt_path,
+                zmt_cmd=zmt_cmd
+            ), shell=True
         )
 
     def _zfs_exec(self, zfs_cmd, fs, extra=""):
-        cmd = 'zfs {zfs_cmd} {fs_main_fs}'.format(
-            zfs_cmd=zfs_cmd, fs_main_fs=fs.main_fs, extra=extra
-        )
-        subprocess.check_call(
-            cmd, universal_newlines=True, shell=True
+        self._cmd.call(
+            'zfs {zfs_cmd} {fs_main_fs}'.format(
+                zfs_cmd=zfs_cmd, fs_main_fs=fs.main_fs, extra=extra
+            )
         )
 
     def _zfs_mirror_exec(self, zfs_cmd, fs, extra=""):
-        cmd = 'ssh {host_mirror} "zfs {zfs_cmd} {fs_main_fs} {extra}"'.format(
-            host_mirror=fs.host_mirror, zfs_cmd=zfs_cmd,
-            fs_main_fs=fs.main_fs, extra=extra
+        self._cmd.call(
+            'ssh {host_mirror} "zfs {zfs_cmd} {fs_main_fs} {extra}"'.format(
+                host_mirror=fs.host_mirror, zfs_cmd=zfs_cmd,
+                fs_main_fs=fs.main_fs, extra=extra
+            ), shell=True
         )
-        subprocess.check_call(
-            cmd, universal_newlines=True, shell=True
-        )
-
-    def _item_to_fs(self):
-        item = self.args.item
-        if not item:
-            print('No vm/container specified')
-            exit(0)
-        try:
-            if not isinstance(item, (list, tuple)):
-                item = [item]
-            fs = self._to_filesystem(item)[0]
-        except UnboundLocalError:
-            print("The filesystem doesn't exists")
-            exit(0)
-        return fs
 
     def activate(self):
         fs = self._item_to_fs()
@@ -358,7 +376,7 @@ zfs_main:{zfs_main}\n'''.format(
     def _activate(self, fs):
         # write last autosnap from last zfs snaphost
         self._write_snap_file(
-            'autosnap/%s' % fs.longname, self._get_last_snap_from_zfs(fs)
+            'autosnap/%s' % fs.longname, self._last_snap_from_zfs(fs)
         )
 
     def deactivate(self):
@@ -366,32 +384,25 @@ zfs_main:{zfs_main}\n'''.format(
         self._deactivate(fs)
 
     def _deactivate(self, fs):
-        snap_path = self._get_snap_file_path(fs)
+        snap_path = self._snap_file_path(fs)
         if os.path.exists(snap_path):
             # remove /var/lib/zmt/autosnap file
             if fs not in self.running:
                 os.remove(snap_path)
 
-    def _get_autosnap_fs(self):
+    def _autosnap_fs(self):
         return self._to_filesystem(os.listdir('/var/lib/zmt/autosnap'))
 
-    def mount(self):
-        items = self._get_autosnap_fs()
-        for item in items:
-            item.mount()
+    def mount(self, func='mount'):
+        for fs in self._all_autosnap_fs():
+            fs.mount()
 
     def umount(self):
-        items = self._get_autosnap_fs()
-        for item in items:
-            item.umount()
+        for fs in self._all_autosnap_fs():
+            fs.umount()
 
     def start(self):
-        if 'item' in self.args and self.args.item:
-            all_fs = [self._item_to_fs()]
-        else:
-            all_fs = self._get_autosnap_fs()
-
-        for fs in all_fs:
+        for fs in self._all_autosnap_fs():
             if fs.kind == 'container':
                 self._compose(fs, 'up -d')
             if fs.kind == 'vm':
@@ -402,12 +413,7 @@ zfs_main:{zfs_main}\n'''.format(
         self.start()
 
     def stop(self):
-        if self.args.item:
-            all_fs = [self._item_to_fs()]
-        else:
-            all_fs = self._get_autosnap_fs()
-
-        for fs in all_fs:
+        for fs in self._all_autosnap_fs():
             commands = {
                 'container': {'stop': 'stop', 'kill': 'kill'},
                 'vm': {'stop': 'shutdown', 'kill': 'destroy'},
@@ -433,11 +439,11 @@ zfs_main:{zfs_main}\n'''.format(
                 print('No running container/vm found')
                 exit(0)
 
-        for fs in all_fs:
+        async def async_move(fs):
             if fs.kind == 'container':
                 # container pre checks
                 self._zfs_mirror_exec('get -H -o value mounted', fs, extra='|grep -q no')
-                last_inc = self._get_last_snap_from_file('autosnap/%s' % fs.longname)
+                last_inc = self._last_snap_from_file('autosnap/%s' % fs.longname)
                 try:
                     self._zfs_mirror_exec('list -H -o name -r -d 1 -t snap', fs, extra='|grep -q %s' % last_inc)
                 except subprocess.CalledProcessError:
@@ -446,7 +452,7 @@ zfs_main:{zfs_main}\n'''.format(
                     exit(0)
                 try:
                     # check for open files/dirs, would break unmount
-                    subprocess.check_call('! lsof -w|grep /tank/docker/%s' % fs.name, shell=True)
+                    self._cmd.call('! lsof -X -w|grep -q /tank/docker/%s' % fs.name, shell=True)
                 except subprocess.CalledProcessError:
                     print("stopping move, the directory /tank/docker/%s is in use" % fs.name)
                     exit(0)
@@ -461,26 +467,29 @@ zfs_main:{zfs_main}\n'''.format(
                 self._zmt_mirror_exec("activate %s" % fs.longname, fs)
                 self._zmt_mirror_exec("start %s" % fs.longname, fs)
 
+        loop = asyncio.get_event_loop()
+        for fs in all_fs:
+            loop.run_until_complete(async_move(fs))
+        loop.close()
+
     def _compose(self, fs, compose_cmd="stop"):
         if fs.kind == 'container':
             if 'compose_file' in self.config['container']:
                 compose_file = self.config['container']['compose_file']
             else:
                 compose_file = 'docker-compose.yml'
-            zfs_mountpoint = self._get_fs_mountpoint(fs)
-            cmd = 'docker-compose -f %s %s' % (compose_file, compose_cmd)
-            subprocess.check_call(
-                cmd.split(' '), universal_newlines=True, cwd=zfs_mountpoint
+            zfs_mountpoint = self._fs_mountpoint(fs)
+            self._cmd.call(
+                'docker-compose -f %s %s' % (compose_file, compose_cmd), cwd=zfs_mountpoint
             )
         self._update_running()
 
     def _virsh(self, fs, virsh_cmd="start"):
         if fs.kind == 'vm':
-            cmd = 'virsh %s %s' % (virsh_cmd, fs.name)
-            subprocess.check_call(cmd.split(' '), universal_newlines=True)
+            self._cmd.call('virsh %s %s' % (virsh_cmd, fs.name))
         self._update_running()
 
-    def _get_backup_snap_names(self, snap_names):
+    def _backup_snap_names(self, snap_names):
         backup_snap_names = OrderedDict()
         for snap_fullname in snap_names:
             snap_root, snap_name = snap_fullname.split("@")
@@ -503,19 +512,18 @@ zfs_main:{zfs_main}\n'''.format(
         failures = ''
         for fs in fs_to_backup:
             try:
-                last_inc = self._get_inc_from_file(
+                last_inc = self._inc_from_file(
                     'backup/%s' % fs.longname, inc_as_stream=False
                 )
 
                 # get all snapshots from tank
-                cmd = 'zfs list -H -S creation -r -o name -t snap {zfs_main}/{fs}'.format(
-                    zfs_main=fs.zfs_main, fs=fs.name, inc=last_inc,
+                snap_names = self._cmd.output(
+                    'zfs list -H -S creation -r -o name -t snap {zfs_main}/{fs}'.format(
+                        zfs_main=fs.zfs_main, fs=fs.name, inc=last_inc,
+                    )
                 )
-                snap_names = subprocess.check_output(
-                    cmd, universal_newlines=True, shell=True
-                ).splitlines()
 
-                backup_snap_names = self._get_backup_snap_names(snap_names)
+                backup_snap_names = self._backup_snap_names(snap_names)
                 backup_done = False
 
                 # send only the newest snapshot from tank to backup
@@ -528,7 +536,7 @@ zfs_main:{zfs_main}\n'''.format(
                             snap_name=snap_name, snap_root=snap_root, snap_backup_root=snap_backup_root
                         )
                         if not self.args.test:
-                            subprocess.check_output(cmd, universal_newlines=True, shell=True)
+                            self._cmd.output(cmd)
                             backup_done = True
                         else:
                             print(cmd.replace('  ', ''))
@@ -542,11 +550,10 @@ zfs_main:{zfs_main}\n'''.format(
                     )
 
                     # fix mountpoints
-                    cmd = 'zfs set mountpoint=/{zfs_backup}/{fs} {zfs_backup}/{fs}'.format(
-                        zfs_backup=fs.zfs_backup, fs=fs.name,
-                    )
-                    subprocess.check_output(
-                        cmd, universal_newlines=True, shell=True
+                    self._cmd.output(
+                        'zfs set mountpoint=/{zfs_backup}/{fs} {zfs_backup}/{fs}'.format(
+                            zfs_backup=fs.zfs_backup, fs=fs.name,
+                        )
                     )
             except:
                 failures += traceback.format_exc()
@@ -557,9 +564,7 @@ zfs_main:{zfs_main}\n'''.format(
     def _list_snaps(self, zfs_root, fs_name):
         cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_root}/{fs_name}|'
         cmd = (cmd + 'grep "@autosnap-"').format(zfs_root=zfs_root, fs_name=fs_name)
-        snaps = subprocess.check_output(
-            cmd, universal_newlines=True, shell=True
-        ).splitlines()
+        snaps = self._cmd.output(cmd, shell=True)
         return snaps
 
     def _destroy_snaps(self, snaps, snaps_keep):
@@ -641,9 +646,7 @@ zfs_main:{zfs_main}\n'''.format(
                 def exec_rsync_cmd(failures, current_failure_tries, cmd):
                     if current_failure_tries > 1:
                         try:
-                            subprocess.check_call(
-                                cmd.split(' '), universal_newlines=True
-                            )
+                            self._cmd.call(cmd)
                             snap_cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(
                                 zfs_backup=self.config['rsync']['zfs_backup'],
                                 fs=fs, name='autosnap-%s' % now_string
@@ -653,7 +656,7 @@ zfs_main:{zfs_main}\n'''.format(
                             if dry_run:
                                 print("* zfs snap rsync not done, in dry-run mode")
                             else:
-                                subprocess.check_call(snap_cmd, shell=True)
+                                self._cmd.call(snap_cmd)
                         except:
                             failures += traceback.format_exc()
                             current_failure_tries -= 1
@@ -678,9 +681,7 @@ zfs_main:{zfs_main}\n'''.format(
 
         outputs = []
         for fs, script_cmd in scripts_items:
-            output = subprocess.check_output(
-                script_cmd.split(' '), universal_newlines=True
-            )
+            output = self._cmd.output(script_cmd)
             if output:
                 outputs.append("\n\n%s:%s\n%s" % (fs, script_cmd, output))
             snap_cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(
@@ -692,7 +693,7 @@ zfs_main:{zfs_main}\n'''.format(
             if dry_run:
                 print("* zfs snap not done, in dry-run mode")
             else:
-                subprocess.check_call(snap_cmd, shell=True)
+                self._cmd.call(snap_cmd)
         if outputs:
             print("\n".join(outputs))
 
@@ -861,6 +862,10 @@ class ZfsParser:
             help='mount active filesystems on host'
         )
         parser.add_argument(
+            'item', nargs='?', default=None,
+            help="without argument mounts all container/vms"
+        )
+        parser.add_argument(
             '-v', dest='verbose', const='-v ', action='store_const',
             default='', help='verbose'
         )
@@ -870,6 +875,10 @@ class ZfsParser:
         parser = self.subparsers.add_parser(
             'umount',
             help='umount active filesystems on host'
+        )
+        parser.add_argument(
+            'item', nargs='?', default=None,
+            help="without argument unmounts all container/vms"
         )
         parser.add_argument(
             '-v', dest='verbose', const='-v ', action='store_const',
