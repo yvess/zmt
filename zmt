@@ -17,19 +17,28 @@ AUTOSNAP_DATESTR = '%Y-%m-%d_%H:%M:%S'
 
 
 class Cmd:
-    def output(self, cmd, async=False, shell=False, split=True, **kwargs):
-        if not shell:
-            cmd = cmd.split(' ')
-        output = subprocess.check_output(
-            cmd,
-            universal_newlines=True, shell=shell
-        )
-        if split:
-            return output.splitlines()
+    def output(self, cmd, run_async=False, shell=False, split=True, **kwargs):
+        if run_async:
+            async def async_exec():
+                process = await asyncio.create_subprocess_shell(cmd, stdout=PIPE)
+                output = await process.stdout.read()
+                return [l for l in output.decode('utf-8').split('\n') if l]
+            return async_exec()
         else:
-            return output.strip()
+            print('* cmd output:', cmd)
+            if not shell:
+                cmd = cmd.split(' ')
+            output = subprocess.check_output(
+                cmd,
+                universal_newlines=True, shell=shell
+            )
+            if split:
+                return output.splitlines()
+            else:
+                return output.strip()
 
-    def call(self, cmd, async=False, shell=False, cwd=None):
+    def call(self, cmd, run_async=False, shell=False, cwd=None):
+        print('* cmd call:', cmd)
         if not shell:
             cmd = cmd.split(' ')
         subprocess.check_call(cmd, universal_newlines=True, shell=shell, cwd=cwd)
@@ -122,6 +131,9 @@ class ZfsTools:
         )
         self._update_running()
 
+    def close(self):
+        self.loop.close()
+
     def _all_autosnap_fs(self):
         if 'item' in self.args and self.args.item:
             all_fs = [self._item_to_fs()]
@@ -144,7 +156,11 @@ class ZfsTools:
         return fs
 
     def _update_running(self):
-        self.running = self._running_vms() + self._running_containers()
+        running_vms, running_containers = self.loop.run_until_complete(asyncio.gather(
+            self._running_vms(),
+            self._running_containers()
+        ))
+        self.running = running_vms + running_containers
 
     def _make_running_list(self, items, managed_items, kind='vm'):
         running_items = [
@@ -154,18 +170,18 @@ class ZfsTools:
         ]
         return running_items
 
-    def _running_vms(self):
-        running_vms = self.cmd.output('virsh list --name')
+    async def _running_vms(self):
+        running_vms = await self.cmd.output('virsh list --name', run_async=True)
         return self._make_running_list(
             running_vms, self.managed_vms, kind='vm'
         )
 
-    def _running_containers(self):
-        has_running_containers = self.cmd.output('docker ps -q')
+    async def _running_containers(self):
+        has_running_containers = await self.cmd.output('docker ps -q', run_async=True)
         if has_running_containers:
             cmd = 'docker ps -q|xargs docker inspect --format "{{.Name}}"|' + \
                   'grep -oP "(?<=^/)[a-zA-Z0-9]*(?=_.*)"|sort|uniq'
-            running_containers = self.cmd.output(cmd, shell=True)
+            running_containers = await self.cmd.output(cmd, run_async=True)
             return self._make_running_list(
                 running_containers, self.managed_containers, kind='container'
             )
@@ -440,7 +456,7 @@ zfs_main:{zfs_main}\n'''.format(
                 print('No running container/vm found')
                 exit(0)
 
-        async def async_move(fs):
+        def async_move(fs):  # async TODO
             if fs.kind == 'container':
                 # container pre checks
                 self._zfs_mirror_exec('get -H -o value mounted', fs, extra='|grep -q no')
@@ -468,10 +484,10 @@ zfs_main:{zfs_main}\n'''.format(
                 self._zmt_mirror_exec("activate %s" % fs.longname, fs)
                 self._zmt_mirror_exec("start %s" % fs.longname, fs)
 
-        loop = asyncio.get_event_loop()
         for fs in all_fs:
-            loop.run_until_complete(async_move(fs))
-        loop.close()
+            # loop = asyncio.get_event_loop()
+            async_move(fs)
+            # loop.close()
 
     def _compose(self, fs, compose_cmd="stop"):
         if fs.kind == 'container':
@@ -718,12 +734,15 @@ class ZfsParser:
         if not hasattr(args, 'command'):
             self.parser.print_help()
             exit(0)
-        zfstools = ZfsTools(args, self.config)
+        self.zfstools = ZfsTools(args, self.config)
 
-        if hasattr(zfstools, args.command):
-            getattr(zfstools, args.command)()
+        if hasattr(self.zfstools, args.command):
+            getattr(self.zfstools, args.command)()
         else:
             print('command %s not known' % args.command)
+
+    def close(self):
+        self.zfstools.close()
 
     def parser_autosnap(self, subparsers):
         parser = self.subparsers.add_parser(
@@ -915,6 +934,7 @@ def main():
     # main parser
     zfs_parser = ZfsParser()
     zfs_parser.run()
+    zfs_parser.close()
 
 
 if __name__ == '__main__':
