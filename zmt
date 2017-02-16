@@ -18,7 +18,7 @@ AUTOSNAP_DATESTR = '%Y-%m-%d_%H:%M:%S'
 
 class Cmd:
     def output(self, cmd, run_async=False, shell=False, split=True, **kwargs):
-        print('# cmd output:', cmd)
+        # print('# cmd output:', cmd)
         if run_async:
             async def async_cmd():
                 if shell:
@@ -45,7 +45,7 @@ class Cmd:
                 return output.strip()
 
     def call(self, cmd, run_async=False, shell=False, cwd=None):
-        print('# cmd call:', cmd)
+        # print('# cmd call:', cmd)
         if run_async:
             async def async_exec():
                 if cwd:
@@ -257,6 +257,11 @@ class ZfsTools:
     def _snap_name(self, fq_snap_name):
         return fq_snap_name.split('@')[1]
 
+    def _create_autosnap_name(self):
+        now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
+        snap_name = 'autosnap-%s' % now_string
+        return snap_name
+
     def _host_is_up(self, host):
         if '@' not in host:
             return True
@@ -296,16 +301,11 @@ class ZfsTools:
             fs_to_snap = self._to_filesystem(self.args.items)
         else:
             fs_to_snap = self.running
-        self._autosnap(fs_to_snap)
+        self.task_loop.run_until_complete(asyncio.wait(self._autosnap_pre_checks()))
+        self.task_loop.run_until_complete(asyncio.wait(self._autosnap(fs_to_snap)))
+        self._autosnap_send(fs_to_snap)
 
-    def _autosnap(self, fs_to_snap):
-        if not isinstance(fs_to_snap, list):
-            fs_to_snap = [fs_to_snap]
-        if not os.path.exists('/var/lib/zmt/autosnap/'):
-            os.makedirs('/var/lib/zmt/autosnap/')
-        now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
-        snap_name = 'autosnap-%s' % now_string
-
+    def _autosnap_pre_checks(self):
         async def async_check_other():
             # check if other autosnap is running
             eq_check = 1 if self.args.command == 'autosnap' else 0
@@ -327,8 +327,13 @@ class ZfsTools:
             if returncode != 0:
                 print("other move is running, not autosnapping")
                 exit(0)
-        tasks = [async_check_other(), async_check_move()]
-        self.task_loop.run_until_complete(asyncio.wait(tasks))
+        return [async_check_other(), async_check_move()]
+
+    def _autosnap(self, fs_to_snap):
+        if not isinstance(fs_to_snap, list):
+            fs_to_snap = [fs_to_snap]
+        if not os.path.exists('/var/lib/zmt/autosnap/'):
+            os.makedirs('/var/lib/zmt/autosnap/')
 
         # create the local snapshots
         tasks = []
@@ -336,15 +341,17 @@ class ZfsTools:
             async def async_snap(fs):
                 returncode = await self.cmd.call(
                     'zfs snap -r {zfs_main}/{fs}@{snap_name}'.format(
-                        zfs_main=fs.zfs_main, fs=fs.name, snap_name=snap_name
+                        zfs_main=fs.zfs_main, fs=fs.name, snap_name=self._create_autosnap_name()
                     ), run_async=True
                 )
                 if returncode != 0:
                     print("autosnap went wrong")
                     exit(0)
             tasks.append(async_snap(fs))
-        self.task_loop.run_until_complete(asyncio.wait(tasks))
+            return tasks
 
+    def _autosnap_send(self, fs_to_snap):
+        snap_name = self._create_autosnap_name()
         host_mirros_up = {}
         # send all snapshots over ssh to the host_mirror
         for fs in fs_to_snap:
@@ -408,11 +415,11 @@ zfs_main:{zfs_main}\n'''.format(
             ), shell=True, run_async=True
         )
 
-    def _zfs_exec(self, zfs_cmd, fs, extra=""):
-        self.cmd.call(
+    async def _zfs_exec(self, zfs_cmd, fs, extra=""):
+        await self.cmd.call(
             'zfs {zfs_cmd} {fs_main_fs}'.format(
                 zfs_cmd=zfs_cmd, fs_main_fs=fs.main_fs, extra=extra
-            )
+            ), run_async=True
         )
 
     async def _zfs_mirror_exec(self, zfs_cmd, fs, extra=""):
@@ -442,13 +449,19 @@ zfs_main:{zfs_main}\n'''.format(
     def deactivate(self):
         fs = self._item_to_fs()
         self._deactivate(fs)
+        self.task_loop.run_until_complete(asyncio.wait(self._deactivate(fs)))
 
-    def _deactivate(self, fs):
+    async def _deactivate(self, fs):
         snap_path = self._snap_file_path(fs)
-        if os.path.exists(snap_path):
-            # remove /var/lib/zmt/autosnap file
-            if fs not in self.running:
-                os.remove(snap_path)
+        if fs not in self.running:
+            returncode = await self.cmd.call(
+                'rm -f %s' % snap_path, run_async=True
+            )
+            if returncode != 0:
+                print("other autosnap is running, not autosnapping")
+                exit(0)
+        else:
+            await asyncio.sleep(0)
 
     def _autosnap_fs(self):
         return self._to_filesystem(os.listdir('/var/lib/zmt/autosnap'))
@@ -470,7 +483,7 @@ zfs_main:{zfs_main}\n'''.format(
         tasks = []
         for fs in self._all_autosnap_fs():
             tasks.append(async_start(fs))
-        self.loop.run_until_complete(*tasks)
+        self.loop.run_until_complete(asyncio.wait(tasks))
 
     def stop(self):
         async def async_stop(fs):
@@ -486,7 +499,7 @@ zfs_main:{zfs_main}\n'''.format(
         tasks = []
         for fs in self._all_autosnap_fs():
             tasks.append(async_stop(fs))
-        self.loop.run_until_complete(*tasks)
+        self.task_loop.run_until_complete(asyncio.wait(tasks))
 
     def autostart(self):
         self.mount()
@@ -523,41 +536,41 @@ zfs_main:{zfs_main}\n'''.format(
                 checks.append(async_check_in_use(fs))
             return checks
 
-        async def async_stop(fs):
-            if fs.kind == 'container':
-                await self._compose(fs, self.args.cmd_stop)
-
         def async_autosnap_cleanup(fs):
             tasks = []
             if fs.kind == 'container':
                 async def async_rm(fs):
-                    await self._compose(fs, 'rm -f')
+                    await self._compose(fs, 'rm -f', run_async=True)
                 tasks.append(async_rm(fs))
-
-                async def async_autosnap(fs):
-                    await self._autosnap(fs)
-                tasks.append(async_autosnap(fs))
 
                 async def async_deactivate(fs):
                     await self._deactivate(fs)
                 tasks.append(async_deactivate(fs))
             return tasks
 
-        async def async_mount(fs):
-            if fs.kind == 'container':
-                await self._zfs_exec('umount', fs)
-                await self._zfs_mirror_exec('mount', fs)
-
-        def async_acticate_start(fs):
+        def async_mount(fs):
             tasks = []
             if fs.kind == 'container':
-                async def async_activate(fs):
+                async def async_zfs_exec(fs):
+                    await self._zfs_exec('umount', fs)
+                tasks.append(async_zfs_exec(fs))
+
+                async def async_zfs_mirror_exec(fs):
+                    await self._zfs_mirror_exec('mount', fs)
+                tasks.append(async_zfs_mirror_exec(fs))
+            return tasks
+
+        def async_activate_start(fs):
+            tasks = []
+            if fs.kind == 'container':
+                async def async_activate_mirror(fs):
                     await self._zmt_mirror_exec("activate %s" % fs.longname, fs)
-                tasks.append(async_activate(fs))
+                tasks.append(async_activate_mirror(fs))
 
                 async def async_start(fs):
                     await self._zmt_mirror_exec("start %s" % fs.longname, fs)
                 tasks.append(async_start(fs))
+            return tasks
 
         self._update_running()
 
@@ -576,11 +589,15 @@ zfs_main:{zfs_main}\n'''.format(
                 exit(0)
 
         self.task_loop.run_until_complete(self._async_wait(all_fs, async_pre_checks))
-        self.task_loop.run_until_complete(self._async_wait(all_fs, async_stop))
+        self.stop()
         self.task_loop.run_until_complete(self._async_wait(all_fs, async_autosnap_cleanup))
+        self.task_loop.run_until_complete(asyncio.wait(self._autosnap_pre_checks()))
+        self.task_loop.run_until_complete(self._async_wait(all_fs, self._autosnap))
+        self._autosnap_send(all_fs)
         self.task_loop.run_until_complete(self._async_wait(all_fs, async_mount))
+        self.task_loop.run_until_complete(self._async_wait(all_fs, async_activate_start))
 
-    async def _compose(self, fs, compose_cmd="stop"):
+    async def _compose(self, fs, compose_cmd="stop", run_async=False):
         if fs.kind == 'container':
             if 'compose_file' in self.config['container']:
                 compose_file = self.config['container']['compose_file']
@@ -717,7 +734,7 @@ zfs_main:{zfs_main}\n'''.format(
             )]
         else:
             rsync_hosts = self.config.items('rsync_hosts')
-        now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
+        snap_name = self._create_autosnap_name()
         verbose, dry_run = self.args.verbose, self.args.dry_run
 
         failures = ''
@@ -757,7 +774,7 @@ zfs_main:{zfs_main}\n'''.format(
                             self.cmd.call(cmd)
                             snap_cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(
                                 zfs_backup=self.config['rsync']['zfs_backup'],
-                                fs=fs, name='autosnap-%s' % now_string
+                                fs=fs, name=snap_name
                             )
                             if verbose:
                                 print("* zfs snap rsync with command:\n  %s" % snap_cmd)
@@ -784,9 +801,8 @@ zfs_main:{zfs_main}\n'''.format(
             )]
         else:
             scripts_items = self.config.items('scripts_items')
-        now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
         verbose, dry_run = self.args.verbose, self.args.dry_run
-
+        snap_name = self._create_autosnap_name()
         outputs = []
         for fs, script_cmd in scripts_items:
             output = self.cmd.output(script_cmd)
@@ -794,7 +810,7 @@ zfs_main:{zfs_main}\n'''.format(
                 outputs.append("\n\n%s:%s\n%s" % (fs, script_cmd, output))
             snap_cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(
                 zfs_backup=self.config['scripts']['zfs_backup'],
-                fs=fs, name='autosnap-%s' % now_string
+                fs=fs, name=snap_name
             )
             if verbose:
                 print("* executing script:\n  %s" % script_cmd)
