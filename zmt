@@ -150,8 +150,8 @@ class ZfsTools:
         if 'vm' in self.config:
             self.managed_vms = self.config['vm']['managed'].split(',')
         self.managed_fs = (
-            self._to_filesystem(self.managed_vms) +
-            self._to_filesystem(self.managed_containers)
+            self._all_to_fs(self.managed_vms) +
+            self._all_to_fs(self.managed_containers)
         )
 
     def close(self):
@@ -172,7 +172,7 @@ class ZfsTools:
         try:
             if not isinstance(item, (list, tuple)):
                 item = [item]
-            fs = self._to_filesystem(item)[0]
+            fs = self._all_to_fs(item)[0]
         except UnboundLocalError:
             print("The filesystem doesn't exists")
             exit(0)
@@ -270,7 +270,7 @@ class ZfsTools:
         else:
             return False
 
-    def _to_filesystem(self, items):
+    def _all_to_fs(self, items):
         kind_items = []
         for item in items:
             if item in self.managed_vms and item in self.managed_containers:
@@ -293,7 +293,7 @@ class ZfsTools:
         self._check_running()
 
         if self.args.items:
-            fs_to_snap = self._to_filesystem(self.args.items)
+            fs_to_snap = self._all_to_fs(self.args.items)
         else:
             fs_to_snap = self.running
         self.loop.run_until_complete(asyncio.wait(self._autosnap_pre_checks()))
@@ -461,7 +461,7 @@ zfs_main:{zfs_main}\n'''.format(
             await asyncio.sleep(0)
 
     def _autosnap_fs(self):
-        return self._to_filesystem(os.listdir('/var/lib/zmt/autosnap'))
+        return self._all_to_fs(os.listdir('/var/lib/zmt/autosnap'))
 
     def mount(self, func='mount'):
         for fs in self._all_autosnap_fs():
@@ -626,7 +626,7 @@ zfs_main:{zfs_main}\n'''.format(
             os.makedirs('/var/lib/zmt/backup/')
 
         if self.args.items:
-            fs_to_backup = self._to_filesystem(self.args.items)
+            fs_to_backup = self._all_to_fs(self.args.items)
         else:
             # proccess all managed fs from zmt.ini
             fs_to_backup = self.managed_fs
