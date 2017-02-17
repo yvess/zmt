@@ -291,14 +291,14 @@ class ZfsTools:
     def autosnap(self):
         self._update_running()
         self._check_running()
-
+        snap_name = self._create_autosnap_name()
         if self.args.items:
             fs_to_snap = self._all_to_fs(self.args.items)
         else:
             fs_to_snap = self.running
         self.loop.run_until_complete(asyncio.wait(self._autosnap_pre_checks()))
-        self.loop.run_until_complete(asyncio.wait(self._autosnap(fs_to_snap)))
-        self._autosnap_send(fs_to_snap)
+        self.loop.run_until_complete(asyncio.wait(self._autosnap(fs_to_snap, snap_name)))
+        self.loop.run_until_complete(asyncio.wait(self._autosnap_send(fs_to_snap, snap_name)))
 
     def _autosnap_pre_checks(self):
         async def async_check_other():
@@ -324,7 +324,7 @@ class ZfsTools:
                 exit(0)
         return [async_check_other(), async_check_move()]
 
-    def _autosnap(self, fs_to_snap):
+    def _autosnap(self, fs_to_snap, snap_name):
         if not isinstance(fs_to_snap, list):
             fs_to_snap = [fs_to_snap]
         if not os.path.exists('/var/lib/zmt/autosnap/'):
@@ -336,18 +336,18 @@ class ZfsTools:
             async def async_snap(fs):
                 returncode = await self.cmd.call(
                     'zfs snap -r {zfs_main}/{fs}@{snap_name}'.format(
-                        zfs_main=fs.zfs_main, fs=fs.name, snap_name=self._create_autosnap_name()
+                        zfs_main=fs.zfs_main, fs=fs.name, snap_name=snap_name
                     ), run_async=True
                 )
                 if returncode != 0:
                     print("autosnap went wrong")
                     exit(0)
             tasks.append(async_snap(fs))
-            return tasks
+        return tasks
 
-    def _autosnap_send(self, fs_to_snap):
-        snap_name = self._create_autosnap_name()
+    def _autosnap_send(self, fs_to_snap, snap_name):
         host_mirros_up = {}
+        tasks = []
         # send all snapshots over ssh to the host_mirror
         for fs in fs_to_snap:
             if fs.host_mirror and fs.host_mirror not in host_mirros_up:
@@ -364,9 +364,11 @@ class ZfsTools:
                     zfs_main=fs.zfs_main, fs=fs.name, host_mirror=fs.host_mirror,
                     inc=last_inc, snap_name=snap_name
                 )
-                self.cmd.output(
-                    cmd, shell=True
-                )
+                async def async_zfs_send(cmd):
+                    await self.cmd.call(
+                        cmd, shell=True, run_async=True
+                    )
+                tasks.append(async_zfs_send(cmd))
 
                 # write last autosnap
                 self._write_snap_file(
@@ -375,6 +377,7 @@ class ZfsTools:
             else:
                 if fs.host_mirror:
                     print("Mirror host is down, trying it next time")
+        return tasks
 
     def inspect(self):
         print('* config* ')
@@ -504,16 +507,18 @@ zfs_main:{zfs_main}\n'''.format(
         self.mount()
         self.start()
 
-    async def _async_wait(self, all_fs, func):
+    async def _async_wait(self, all_fs, func, kwargs={}):
         tasks = []
         for fs in all_fs:
-            new_tasks = func(fs)
+            new_tasks = func(fs, **kwargs)
             if not isinstance(new_tasks, (list, tuple)):
                 new_tasks = [new_tasks]
             tasks = tasks + new_tasks
         return await asyncio.wait(tasks)
 
     def move(self):
+        snap_name = self._create_autosnap_name()
+
         def async_pre_checks(fs):
             tasks = []
             if fs.kind == 'container':
@@ -588,8 +593,8 @@ zfs_main:{zfs_main}\n'''.format(
         self.loop.run_until_complete(self._async_wait(all_fs, async_pre_checks))
         self.stop(all_fs)
         self.loop.run_until_complete(asyncio.wait(self._autosnap_pre_checks()))
-        self.loop.run_until_complete(self._async_wait(all_fs, self._autosnap))
-        self._autosnap_send(all_fs)
+        self.loop.run_until_complete(self._async_wait(all_fs, self._autosnap, dict(snap_name=snap_name)))
+        self.loop.run_until_complete(asyncio.wait(self._autosnap_send(all_fs, snap_name)))
         self.loop.run_until_complete(self._async_wait(all_fs, async_rm))
         self.loop.run_until_complete(self._async_wait(all_fs, async_mount_cleanup))
         self.loop.run_until_complete(self._async_wait(all_fs, async_activate_start))
@@ -604,12 +609,10 @@ zfs_main:{zfs_main}\n'''.format(
             await self.cmd.call(
                 'docker-compose -f %s %s' % (compose_file, compose_cmd), cwd=zfs_mountpoint, run_async=run_async
             )
-        # self._update_running()
 
     async def _virsh(self, fs, virsh_cmd="start", run_async=False):
         if fs.kind == 'vm':
             await self.cmd.call('virsh %s %s' % (virsh_cmd, fs.name), run_async=run_async)
-        # self._update_running()
 
     def _backup_snap_names(self, snap_names):
         backup_snap_names = OrderedDict()
