@@ -24,7 +24,7 @@ class Cmd:
                 if shell:
                     process = await asyncio.create_subprocess_shell(cmd, stdout=PIPE)
                 else:
-                    cmd_list = cmd.split(' ')
+                    cmd_list = [part for part in cmd.split(' ') if part]
                     process = await asyncio.create_subprocess_exec(*cmd_list, stdout=PIPE)
                 output = await process.stdout.read()
                 returncode = await process.wait()
@@ -34,7 +34,7 @@ class Cmd:
             return async_cmd()
         else:
             if not shell:
-                cmd = cmd.split(' ')
+                cmd = [part for part in cmd.split(' ') if part]
             output = subprocess.check_output(
                 cmd,
                 universal_newlines=True, shell=shell
@@ -658,7 +658,7 @@ zfs_main:{zfs_main}\n'''.format(
                             snap_name=snap_name, snap_root=snap_root, snap_backup_root=snap_backup_root
                         )
                         if not self.args.test:
-                            self.cmd.output(cmd)
+                            self.cmd.output(cmd, shell=True)
                             backup_done = True
                         else:
                             print(cmd.replace('  ', ''))
@@ -713,16 +713,17 @@ zfs_main:{zfs_main}\n'''.format(
                 self._destroy_snaps(backupsnaps, fs.backupsnaps_keep)
 
         # rsync backup snaps
-        for fs_name, host_src in self.config.items('rsync_hosts'):
-            backupsnaps = self._list_snaps(self.config['rsync']['zfs_backup'], fs_name)
-            backupsnaps_keep = int(self.config['defaults']['backupsnaps_keep'])
-            if ('backupsnaps_keep_%s' % fs_name) in self.config['rsync']:
-                backupsnaps_keep = int(self.config['rsync']['backupsnaps_keep_%s' % fs_name])
-            elif 'backupsnaps_keep' in self.config['rsync']:
-                backupsnaps_keep = int(self.config['rsync']['backupsnaps_keep'])
+        if self.config.has_section('rsync_hosts'):
+            for fs_name, host_src in self.config.items('rsync_hosts'):
+                backupsnaps = self._list_snaps(self.config['rsync']['zfs_backup'], fs_name)
+                backupsnaps_keep = int(self.config['defaults']['backupsnaps_keep'])
+                if ('backupsnaps_keep_%s' % fs_name) in self.config['rsync']:
+                    backupsnaps_keep = int(self.config['rsync']['backupsnaps_keep_%s' % fs_name])
+                elif 'backupsnaps_keep' in self.config['rsync']:
+                    backupsnaps_keep = int(self.config['rsync']['backupsnaps_keep'])
 
-            if len(backupsnaps) > backupsnaps_keep:
-                self._destroy_snaps(backupsnaps, backupsnaps_keep)
+                if len(backupsnaps) > backupsnaps_keep:
+                    self._destroy_snaps(backupsnaps, backupsnaps_keep)
 
     def rsync(self):
         if self.args.host:
