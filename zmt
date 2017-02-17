@@ -405,11 +405,11 @@ class ZfsTools:
                 '''{fs.name}@{fs.kind} host_mirror: {fs.host_mirror} zfs_main:{fs.zfs_main}
 - autosnap_from_file : {fs.autosnap_file}
 - autosnap_zfs_local : {fs.autosnap_local}
-- autosnap_zfs_mirror: {fs.autosnap_mirror}
-'''.format(fs=fs)
+- autosnap_zfs_mirror: {fs.autosnap_mirror}'''.format(fs=fs)
             )
             if not fs.is_valid_autosnap():
                 print("ERROR: autosnaps don't match")
+            print()
 
     def _fs_mountpoint(self, fs):
         zfs_mountpoint = self.cmd.output(
