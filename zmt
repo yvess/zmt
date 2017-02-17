@@ -104,6 +104,72 @@ class Filesystem:
     def backup_fs(self):
         return "%s/%s" % (self.zfs_backup, self.name)
 
+    @property
+    def autosnap_file(self):
+        return self._last_snap_from_file(snap_type='autosnap')
+
+    @property
+    def autosnap_file_path(self):
+        return '/var/lib/zmt/autosnap/%s' % self.longname
+
+    @property
+    def backup_file(self):
+        return self._last_snap_from_file(snap_type='backup')
+
+    @property
+    def backup_file_path(self):
+        return '/var/lib/zmt/backup/%s' % self.longname
+
+    @property
+    def autosnap_local(self):
+        zfs_cmd = 'list -r -t snap -d 1 -S creation -o name -H'
+        cmd = 'zfs {zfs_cmd} {fs.main_fs}|grep "autosnap-"|head -1'.format(zfs_cmd=zfs_cmd, fs=self)
+        autosnap_name = self.cmd.output(cmd, shell=True)[0].partition('@')[-1]
+        if not autosnap_name:
+            print("the last snapshot needs to be a autosnap snapshot from zmt")
+            exit(1)
+        return autosnap_name
+
+    @property
+    def autosnap_mirror(self):
+        zfs_cmd = 'list -r -t snap -d 1 -S creation -o name -H'
+        cmd = 'ssh {fs.host_mirror} zfs {zfs_cmd} {fs.main_fs}|grep "autosnap-"|head -1'.format(
+            zfs_cmd=zfs_cmd, fs=self
+        )
+        autosnap_name = self.cmd.output(cmd, shell=True)[0].partition('@')[-1]
+        if not autosnap_name:
+            print("the last snapshot needs to be a autosnap snapshot from zmt")
+            exit(1)
+        return autosnap_name
+
+    def is_valid_autosnap(self):
+        if self.autosnap_file == self.autosnap_local == self.autosnap_mirror:
+            return True
+        else:
+            return False
+
+    def _last_snap_from_file(self, snap_type='autosnap'):
+        snap_fname = '/var/lib/zmt/%s/%s' % (snap_type, self.longname)
+        if os.path.exists(snap_fname):
+            with open(snap_fname) as last_snap_file:
+                last_snap = last_snap_file.read().strip()
+            return last_snap
+        else:
+            return None
+
+    def inc_from_file(self, snap_type='autosnap', inc_as_stream=False):
+        last_snap = self._last_snap_from_file(snap_type=snap_type)
+        if last_snap:
+            inc = ('-I @%s' if inc_as_stream else '-i @%s') % last_snap
+            return inc
+        else:
+            return ""
+
+    def write_snap_file(self, snap_type, snap_name):
+        snap_fname = '/var/lib/zmt/%s/%s' % (snap_type, self.longname)
+        with open(snap_fname, 'w') as last_snap:
+            last_snap.write(snap_name)
+
     def mount(self):
         fs_childs = self.cmd.output('zfs list -o name -H -r %s' % self.main_fs)
         for fs in fs_childs:
@@ -210,55 +276,6 @@ class ZfsTools:
         else:
             return []
 
-    def _last_snap_from_file(self, snap_fname):
-        snap_fname = '/var/lib/zmt/%s' % snap_fname
-        if os.path.exists(snap_fname):
-            with open(snap_fname) as last_snap_f:
-                last_snap = last_snap_f.read().strip()
-            return last_snap
-        else:
-            return None
-
-    def _inc_from_file(self, snap_fname, inc_as_stream=False):
-        last_snap = self._last_snap_from_file(snap_fname)
-        if last_snap:
-            inc = ('-I @%s' if inc_as_stream else '-i @%s') % last_snap
-            return inc
-        else:
-            return ""
-
-    def _last_snap_from_zfs(self, fs):
-        # get all snapshots from tank
-        snap_names = self.cmd.output(
-            'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_main}/{fs}'.format(
-                fs=fs.name, zfs_main=fs.zfs_main
-            )
-        )
-        if snap_names[0] and '@autosnap-' in snap_names[0]:
-            return ''.join(snap_names[0].partition("@autosnap-")[1:])[1:]
-        else:
-            print("the last snapshot needs to be a autosnap snapshot from zmt")
-            exit(1)
-
-    def _snap_file_path(self, fs, snap_type="autosnap"):
-        snap_fname = '/var/lib/zmt/%s/%s' % (snap_type, fs.longname)
-        return snap_fname
-
-    def _write_snap_file(self, snap_fname, snap_name):
-        if not os.path.exists('/var/lib/zmt/autosnap/'):
-            os.makedirs('/var/lib/zmt/autosnap/')
-        snap_fname = '/var/lib/zmt/%s' % snap_fname
-        with open(snap_fname, 'w') as last_snap:
-            last_snap.write(snap_name)
-
-    def _snap_name(self, fq_snap_name):
-        return fq_snap_name.split('@')[1]
-
-    def _create_autosnap_name(self):
-        now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
-        snap_name = 'autosnap-%s' % now_string
-        return snap_name
-
     def _host_is_up(self, host):
         if '@' not in host:
             return True
@@ -289,6 +306,8 @@ class ZfsTools:
         return kind_items
 
     def autosnap(self):
+        if not os.path.exists('/var/lib/zmt/autosnap/'):
+            os.makedirs('/var/lib/zmt/autosnap/')
         self._update_running()
         self._check_running()
         snap_name = self._create_autosnap_name()
@@ -327,8 +346,6 @@ class ZfsTools:
     def _autosnap(self, fs_to_snap, snap_name):
         if not isinstance(fs_to_snap, list):
             fs_to_snap = [fs_to_snap]
-        if not os.path.exists('/var/lib/zmt/autosnap/'):
-            os.makedirs('/var/lib/zmt/autosnap/')
 
         # create the local snapshots
         tasks = []
@@ -354,9 +371,7 @@ class ZfsTools:
                 is_up = self._host_is_up(fs.host_mirror)
                 host_mirros_up[fs.host_mirror] = is_up
             if fs.host_mirror and host_mirros_up[fs.host_mirror]:
-                last_inc = self._inc_from_file(
-                    'autosnap/%s' % fs.longname, inc_as_stream=True
-                )
+                last_inc = fs.inc_from_file(snap_type='autosnap', inc_as_stream=True)
 
                 # send fs to host mirror
                 cmd = 'zfs send -R {inc} {zfs_main}/{fs}@{snap_name}|\
@@ -371,33 +386,30 @@ class ZfsTools:
                 tasks.append(async_zfs_send(cmd))
 
                 # write last autosnap
-                self._write_snap_file(
-                    'autosnap/%s' % fs.longname, snap_name
-                )
+                fs.write_snap_file('autosnap', snap_name)
             else:
                 if fs.host_mirror:
                     print("Mirror host is down, trying it next time")
         return tasks
 
     def inspect(self):
-        print('* config* ')
-        print('managed_containers: %s' % self.managed_containers)
-        print('managed_vms: %s' % self.managed_vms)
+        print('# config ')
+        print('managed_containers: %s' % ", ".join(self.managed_containers))
+        print('managed_vms: %s' % ", ".join(self.managed_vms))
         print()
-        print('* running filesystems to snap *')
+        print('# running filesystems')
         self._update_running()
 
         for fs in self.running:
             print(
-                '''name: {name}@{kind}
-host_mirror: {host_mirror}
-zfs_main:{zfs_main}\n'''.format(
-                    zfs_main=fs.zfs_main,
-                    name=fs.name,
-                    host_mirror=fs.host_mirror,
-                    kind=fs.kind,
-                )
+                '''{fs.name}@{fs.kind} host_mirror: {fs.host_mirror} zfs_main:{fs.zfs_main}
+- autosnap_from_file : {fs.autosnap_file}
+- autosnap_zfs_local : {fs.autosnap_local}
+- autosnap_zfs_mirror: {fs.autosnap_mirror}
+'''.format(fs=fs)
             )
+            if not fs.is_valid_autosnap():
+                print("ERROR: autosnaps don't match")
 
     def _fs_mountpoint(self, fs):
         zfs_mountpoint = self.cmd.output(
@@ -445,20 +457,15 @@ zfs_main:{zfs_main}\n'''.format(
 
     def _activate(self, fs):
         # write last autosnap from last zfs snaphost
-        self._write_snap_file(
-            'autosnap/%s' % fs.longname, self._last_snap_from_zfs(fs)
-        )
+        fs.write_snap_file('autosnap', fs.autosnap_local)
 
     def deactivate(self):
         fs = self._item_to_fs()
         self.loop.run_until_complete(asyncio.wait([self._deactivate(fs)]))
 
     async def _deactivate(self, fs):
-        snap_path = self._snap_file_path(fs)
         if fs not in self.running:
-            await self.cmd.call(
-                'rm -f %s' % snap_path, run_async=True
-            )
+            await self.cmd.call('rm -f %s' % fs.autosnap_file_path, run_async=True)
         else:
             print("container/vm is running, not deactivating")
             await asyncio.sleep(0)
@@ -524,7 +531,7 @@ zfs_main:{zfs_main}\n'''.format(
             if fs.kind == 'container':
                 async def asyc_check_autosnap(fs):
                     await self._zfs_mirror_exec('get -H -o value mounted', fs, extra='|grep -q no')
-                    last_inc = self._last_snap_from_file('autosnap/%s' % fs.longname)
+                    last_inc = fs.autosnap_file
                     try:
                         await self._zfs_mirror_exec('list -H -o name -r -d 1 -t snap', fs, extra='|grep -q %s' % last_inc)
                     except subprocess.CalledProcessError:
@@ -637,9 +644,7 @@ zfs_main:{zfs_main}\n'''.format(
         failures = ''
         for fs in fs_to_backup:
             try:
-                last_inc = self._inc_from_file(
-                    'backup/%s' % fs.longname, inc_as_stream=False
-                )
+                last_inc = fs.inc_from_file(snap_type='backup', inc_as_stream=False)
 
                 # get all snapshots from tank
                 snap_names = self.cmd.output(
@@ -670,9 +675,7 @@ zfs_main:{zfs_main}\n'''.format(
 
                 if backup_done:
                     # write last backupsnap
-                    self._write_snap_file(
-                        'backup/%s' % fs.longname, backup_snap_names[fs.main_fs]
-                    )
+                    fs.write_snap_file('backup', backup_snap_names[fs.main_fs])
 
                     # fix mountpoints
                     self.cmd.output(
@@ -701,6 +704,11 @@ zfs_main:{zfs_main}\n'''.format(
             snap_exitcode, snap_output = subprocess.getstatusoutput(cmd)
             if verbose:
                 print(snap_output)
+
+    def _create_autosnap_name(self):
+        now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
+        snap_name = 'autosnap-%s' % now_string
+        return snap_name
 
     def cleanup(self):
         for fs in self.managed_fs:
