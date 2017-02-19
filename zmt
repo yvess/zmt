@@ -6,6 +6,7 @@ import subprocess
 import configparser
 import os
 import sys
+import time
 import traceback
 import inspect
 from datetime import datetime
@@ -40,11 +41,12 @@ class Cmd:
                 universal_newlines=True, shell=shell
             )
             if split:
+                output = output.strip()
                 return output.splitlines()
             else:
                 return output.strip()
 
-    def call(self, cmd, run_async=False, shell=False, cwd=None):
+    def call(self, cmd, run_async=False, shell=False, cwd=None, check_returncode=True):
         # print('# cmd call:', cmd)
         if run_async:
             async def async_exec():
@@ -58,7 +60,7 @@ class Cmd:
                     cmd_list = cmd.split(' ')
                     process = await asyncio.create_subprocess_exec(*cmd_list, **kwargs)
                 returncode = await process.wait()
-                if returncode != 0:
+                if check_returncode and returncode != 0:
                     print("something went wrong with the cmd:'%s' exit:%s" % (cmd, returncode))
                 return returncode
             return async_exec()
@@ -170,15 +172,33 @@ class Filesystem:
         with open(snap_fname, 'w') as last_snap:
             last_snap.write(snap_name)
 
+    def mount_task(self, cmd_zfs='zfs mount %s', reverse=False):
+        async def async_mount(items, cmd_zfs=cmd_zfs, reverse=reverse):
+            cmd = []
+            if reverse:
+                items.reverse()
+            for item in items:
+                fs, mounted = item.split('\t')
+                if reverse:
+                    if mounted == 'yes':
+                        cmd.append(cmd_zfs % fs)
+                else:
+                    if mounted == 'no':
+                        cmd.append(cmd_zfs % fs)
+            await self.cmd.call(' && '.join(cmd), shell=True, run_async=True)
+
+        fs_all = self.cmd.output('zfs list -o name,mounted -H -r %s' % self.main_fs)
+        return async_mount(fs_all, cmd_zfs=cmd_zfs, reverse=reverse)
+
     def mount(self):
-        fs_childs = self.cmd.output('zfs list -o name -H -r %s' % self.main_fs)
-        for fs in fs_childs:
-            self.cmd.call('zfs mount %s' % fs)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(self.mount_task())
+        loop.close()
 
     def umount(self):
-        fs_childs = self.cmd.output('zfs list -o name -H -r %s' % self.main_fs)
-        for fs in reversed(fs_childs):
-            self.cmd.call('zfs umount %s' % fs)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(self.mount_task(cmd_zfs='zfs umount %s', reverse=True))
+        loop.close()
 
     def __str__(self):
         return self.longname
@@ -205,6 +225,7 @@ class Filesystem:
 class ZfsTools:
     def __init__(self, args, config):
         self.loop = asyncio.get_event_loop()
+        self.loop_run = self.loop.run_until_complete
         self.cmd = Cmd()
         self.args = args
         self.config = config
@@ -234,14 +255,14 @@ class ZfsTools:
         item = self.args.item
         if not item:
             print('No vm/container specified')
-            exit(0)
+            exit(1)
         try:
             if not isinstance(item, (list, tuple)):
                 item = [item]
             fs = self._all_to_fs(item)[0]
         except UnboundLocalError:
             print("The filesystem doesn't exists")
-            exit(0)
+            exit(1)
         return fs
 
     def _running_tasks(self):
@@ -315,9 +336,9 @@ class ZfsTools:
             fs_to_snap = self._all_to_fs(self.args.items)
         else:
             fs_to_snap = self.running
-        self.loop.run_until_complete(asyncio.wait(self._autosnap_pre_checks()))
-        self.loop.run_until_complete(asyncio.wait(self._autosnap(fs_to_snap, snap_name)))
-        self.loop.run_until_complete(asyncio.wait(self._autosnap_send(fs_to_snap, snap_name)))
+        self.loop_run(asyncio.wait(self._autosnap_pre_checks()))
+        self.loop_run(asyncio.wait(self._autosnap(fs_to_snap, snap_name)))
+        self.loop_run(asyncio.wait(self._autosnap_send(fs_to_snap, snap_name)))
 
     def _autosnap_pre_checks(self):
         async def async_check_other():
@@ -329,7 +350,7 @@ class ZfsTools:
             )
             if returncode != 0:
                 print("other autosnap is running, not autosnapping")
-                exit(0)
+                exit(1)
 
         async def async_check_move():
             # check if a move is running
@@ -340,7 +361,7 @@ class ZfsTools:
             )
             if returncode != 0:
                 print("other move is running, not autosnapping")
-                exit(0)
+                exit(1)
         return [async_check_other(), async_check_move()]
 
     def _autosnap(self, fs_to_snap, snap_name):
@@ -358,7 +379,7 @@ class ZfsTools:
                 )
                 if returncode != 0:
                     print("autosnap went wrong")
-                    exit(0)
+                    exit(1)
             tasks.append(async_snap(fs))
         return tasks
 
@@ -441,7 +462,7 @@ class ZfsTools:
         )
 
     def _update_running(self):
-        running_vms, running_containers = self.loop.run_until_complete(asyncio.gather(
+        running_vms, running_containers = self.loop_run(asyncio.gather(
             *self._running_tasks()
         ))
         self.running = running_vms + running_containers
@@ -449,7 +470,7 @@ class ZfsTools:
     def _check_running(self):
         if not self.args.items and not self.running:
             print('No vms/containers running and no vm/container specified')
-            exit(0)
+            exit(1)
 
     def activate(self):
         fs = self._item_to_fs()
@@ -461,7 +482,7 @@ class ZfsTools:
 
     def deactivate(self):
         fs = self._item_to_fs()
-        self.loop.run_until_complete(asyncio.wait([self._deactivate(fs)]))
+        self.loop_run(asyncio.wait([self._deactivate(fs)]))
 
     async def _deactivate(self, fs):
         if fs not in self.running:
@@ -473,13 +494,17 @@ class ZfsTools:
     def _autosnap_fs(self):
         return self._all_to_fs(os.listdir('/var/lib/zmt/autosnap'))
 
-    def mount(self, func='mount'):
+    def mount(self):
+        tasks = []
         for fs in self._all_autosnap_fs():
-            fs.mount()
+            tasks.append(fs.mount_task())
+        self.loop_run(asyncio.wait(tasks))
 
     def umount(self):
+        tasks = []
         for fs in self._all_autosnap_fs():
-            fs.umount()
+            tasks.append(fs.mount_task(cmd_zfs='zfs umount %s', reverse=True))
+        self.loop_run(asyncio.wait(tasks))
 
     def start(self):
         async def async_start(fs):
@@ -490,7 +515,7 @@ class ZfsTools:
         tasks = []
         for fs in self._all_autosnap_fs():
             tasks.append(async_start(fs))
-        self.loop.run_until_complete(asyncio.wait(tasks))
+        self.loop_run(asyncio.wait(tasks))
 
     def stop(self, all_fs=None):
         async def async_stop(fs):
@@ -503,11 +528,21 @@ class ZfsTools:
                 await self._compose(fs, cmd, run_async=True)
             if fs.kind == 'vm':
                 await self._virsh(fs, cmd, run_async=True)
+                returncode = 0
+
+        def check_vm_stop_complete(all_fs):
+            all_running_vms = set(self.cmd.output('virsh list --name'))
+            all_vms_to_stop = set([fs.name for fs in all_fs if fs.kind == 'vm'])
+            if len(all_vms_to_stop - all_running_vms) != len(all_vms_to_stop):
+                time.sleep(0.5)
+                check_vm_stop_complete(all_fs)
+
         tasks = []
         fs_to_stop = all_fs or self._all_autosnap_fs()
         for fs in fs_to_stop:
             tasks.append(async_stop(fs))
-        self.loop.run_until_complete(asyncio.wait(tasks))
+        self.loop_run(asyncio.wait(tasks))
+        check_vm_stop_complete(fs_to_stop)
         self._update_running()
 
     def autostart(self):
@@ -526,59 +561,59 @@ class ZfsTools:
     def move(self):
         snap_name = self._create_autosnap_name()
 
-        def async_pre_checks(fs):
-            tasks = []
-            if fs.kind == 'container':
-                async def asyc_check_autosnap(fs):
-                    await self._zfs_mirror_exec('get -H -o value mounted', fs, extra='|grep -q no')
-                    last_inc = fs.autosnap_file
-                    try:
-                        await self._zfs_mirror_exec('list -H -o name -r -d 1 -t snap', fs, extra='|grep -q %s' % last_inc)
-                    except subprocess.CalledProcessError:
-                        print("""stopping move, the previous autosnap (%s) \
-        does't exists on the target remote filesystem""" % last_inc)
-                        exit(0)
-                tasks.append(asyc_check_autosnap(fs))
+        async def async_check_autosnap(fs):
+            await self._zfs_mirror_exec('get -H -o value mounted', fs, extra='|grep -q no')
+            last_inc = fs.autosnap_file
+            try:
+                await self._zfs_mirror_exec('list -H -o name -r -d 1 -t snap', fs, extra='|grep -q %s' % last_inc)
+            except subprocess.CalledProcessError:
+                print("""stopping move, the previous autosnap (%s) \
+does't exists on the target remote filesystem""" % last_inc)
+                exit(1)
 
-                async def async_check_in_use(fs):
-                    try:
-                        # check for open files/dirs, would break unmount
-                        await self.cmd.call('! lsof -X -w|grep -q /tank/docker/%s' % fs.name, shell=True, run_async=True)
-                    except subprocess.CalledProcessError:
-                        print("stopping move, the directory /tank/docker/%s is in use" % fs.name)
-                        exit(0)
-                tasks.append(async_check_in_use(fs))
-            return tasks
-
-        async def async_rm(fs):
-            await self._compose(fs, 'rm -f', run_async=True)
+        async def async_check_in_use(fs):
+            try:
+                # check for open files/dirs, would break unmount
+                await self.cmd.call(
+                    '! lsof -X -w|grep -q /%s/%s' % (fs.zfs_main, fs.name),
+                    shell=True, run_async=True, check_returncode=False
+                )
+            except subprocess.CalledProcessError:
+                print("stopping move, the directory /%s/%s is in use" % (fs.zfs_main, fs.name))
+                exit(1)
 
         def async_mount_cleanup(fs):
             tasks = []
-            if fs.kind == 'container':
-                async def async_zfs_exec(fs):
-                    await self._zfs_exec('umount', fs)
-                tasks.append(async_zfs_exec(fs))
 
-                async def async_zfs_mirror_exec(fs):
-                    await self._zfs_mirror_exec('mount', fs)
-                tasks.append(async_zfs_mirror_exec(fs))
+            async def async_umount(fs):
+                await fs.mount_task(cmd_zfs='zfs umount %s', reverse=True)
+            tasks.append(async_umount(fs))
 
-                async def async_deactivate(fs):
-                    await self._deactivate(fs)
-                tasks.append(async_deactivate(fs))
+            async def async_mirror_mount(fs):
+                await self._zmt_mirror_exec('mount %s' % fs.name, fs)
+            tasks.append(async_mirror_mount(fs))
+
+            async def async_deactivate(fs):
+                await self._deactivate(fs)
+            tasks.append(async_deactivate(fs))
+
             return tasks
+
+        async def async_send_cleanup(fs):
+            if fs.kind == 'container':
+                await self._compose(fs, 'rm -f', run_async=True)
+            else:
+                await asyncio.sleep(0)
 
         def async_activate_start(fs):
             tasks = []
-            if fs.kind == 'container':
-                async def async_activate_mirror(fs):
-                    await self._zmt_mirror_exec("activate %s" % fs.longname, fs)
-                tasks.append(async_activate_mirror(fs))
+            async def async_activate_mirror(fs):
+                await self._zmt_mirror_exec("activate %s" % fs.longname, fs)
+            tasks.append(async_activate_mirror(fs))
 
-                async def async_start(fs):
-                    await self._zmt_mirror_exec("start %s" % fs.longname, fs)
-                tasks.append(async_start(fs))
+            async def async_start(fs):
+                await self._zmt_mirror_exec("start %s" % fs.longname, fs)
+            tasks.append(async_start(fs))
             return tasks
 
         self._update_running()
@@ -587,7 +622,7 @@ class ZfsTools:
             fs = self._item_to_fs()
             if fs not in self.running:
                 print('The filesystem must be in use for automatic moving')
-                exit(0)
+                exit(1)
             all_fs = [fs]
         else:
             all_fs = self.running
@@ -595,16 +630,17 @@ class ZfsTools:
                 all_fs = [fs for fs in all_fs if fs.kind == self.args.kind]
             if not all_fs:
                 print('No running container/vm found')
-                exit(0)
+                exit(1)
 
-        self.loop.run_until_complete(self._async_wait(all_fs, async_pre_checks))
+        self.loop_run(self._async_wait(all_fs, async_check_autosnap))
+        self.loop_run(asyncio.wait(self._autosnap_pre_checks()))
         self.stop(all_fs)
-        self.loop.run_until_complete(asyncio.wait(self._autosnap_pre_checks()))
-        self.loop.run_until_complete(self._async_wait(all_fs, self._autosnap, dict(snap_name=snap_name)))
-        self.loop.run_until_complete(asyncio.wait(self._autosnap_send(all_fs, snap_name)))
-        self.loop.run_until_complete(self._async_wait(all_fs, async_rm))
-        self.loop.run_until_complete(self._async_wait(all_fs, async_mount_cleanup))
-        self.loop.run_until_complete(self._async_wait(all_fs, async_activate_start))
+        self.loop_run(self._async_wait(all_fs, async_check_in_use))
+        self.loop_run(self._async_wait(all_fs, async_send_cleanup))
+        self.loop_run(self._async_wait(all_fs, self._autosnap, dict(snap_name=snap_name)))
+        self.loop_run(asyncio.wait(self._autosnap_send(all_fs, snap_name)))
+        self.loop_run(self._async_wait(all_fs, async_mount_cleanup))
+        self.loop_run(self._async_wait(all_fs, async_activate_start))
 
     async def _compose(self, fs, compose_cmd="stop", run_async=False):
         if fs.kind == 'container':
