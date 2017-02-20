@@ -15,6 +15,17 @@ import asyncio
 from asyncio.subprocess import PIPE
 
 AUTOSNAP_DATESTR = '%Y-%m-%d_%H:%M:%S'
+MAX_AUTOSNAP_NR = 4
+
+
+def split_list(long_list, size):
+    lists = []
+    while len(long_list) > size:
+        pice = long_list[:size]
+        lists.append(pice)
+        long_list = long_list[size:]
+    lists.append(long_list)
+    return lists
 
 
 class Cmd:
@@ -337,8 +348,9 @@ class ZfsTools:
         else:
             fs_to_snap = self.running
         self.loop_run(asyncio.wait(self._autosnap_pre_checks()))
-        self.loop_run(asyncio.wait(self._autosnap(fs_to_snap, snap_name)))
-        self.loop_run(asyncio.wait(self._autosnap_send(fs_to_snap, snap_name)))
+        for fs_chunk in split_list(fs_to_snap, MAX_AUTOSNAP_NR):
+            self.loop_run(asyncio.wait(self._autosnap(fs_chunk, snap_name)))
+            self.loop_run(asyncio.wait(self._autosnap_send(fs_chunk, snap_name)))
 
     def _autosnap_pre_checks(self):
         async def async_check_other():
@@ -637,8 +649,9 @@ does't exists on the target remote filesystem""" % last_inc)
         self.stop(all_fs)
         self.loop_run(self._async_wait(all_fs, async_check_in_use))
         self.loop_run(self._async_wait(all_fs, async_send_cleanup))
-        self.loop_run(self._async_wait(all_fs, self._autosnap, dict(snap_name=snap_name)))
-        self.loop_run(asyncio.wait(self._autosnap_send(all_fs, snap_name)))
+        for fs_chunk in split_list(all_fs, MAX_AUTOSNAP_NR):
+            self.loop_run(self._async_wait(fs_chunk, self._autosnap, dict(snap_name=snap_name)))
+            self.loop_run(asyncio.wait(self._autosnap_send(fs_chunk, snap_name)))
         self.loop_run(self._async_wait(all_fs, async_mount_cleanup))
         self.loop_run(self._async_wait(all_fs, async_activate_start))
 
