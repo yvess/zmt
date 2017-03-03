@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # coding: utf-8
 
+from collections import namedtuple
 import argparse
 import subprocess
 import configparser
@@ -350,7 +351,14 @@ class ZfsTools:
         self.loop_run(asyncio.wait(self._autosnap_pre_checks()))
         for fs_chunk in split_list(fs_to_snap, MAX_AUTOSNAP_NR):
             self.loop_run(asyncio.wait(self._autosnap(fs_chunk, snap_name)))
-            self.loop_run(asyncio.wait(self._autosnap_send(fs_chunk, snap_name)))
+            tasks_results = self.loop_run(asyncio.gather(
+                *self._autosnap_send(fs_chunk, snap_name))
+            )
+            for task in tasks_results:
+                if task.has_run:
+                    task.fs.write_snap_file('autosnap', task.snap_name)
+                else:
+                    print("autosnap for fs: %(fs)s, with snap_name: %(snap_name)s, failed" % task._asdict())
 
     def _autosnap_pre_checks(self):
         async def async_check_other():
@@ -412,14 +420,17 @@ class ZfsTools:
                     zfs_main=fs.zfs_main, fs=fs.name, host_mirror=fs.host_mirror,
                     inc=last_inc, snap_name=snap_name
                 )
-                async def async_zfs_send(cmd):
-                    await self.cmd.call(
+
+                async def async_zfs_send(cmd, snap_name, fs):
+                    returncode = await self.cmd.call(
                         cmd, shell=True, run_async=True
                     )
-                tasks.append(async_zfs_send(cmd))
+                    Result = namedtuple('Result', 'has_run, fs, snap_name')
 
-                # write last autosnap
-                fs.write_snap_file('autosnap', snap_name)
+                    if returncode == 0:
+                        return Result(True, fs, snap_name)
+                    return Result(False, fs, snap_name)
+                tasks.append(async_zfs_send(cmd, snap_name, fs))
             else:
                 if fs.host_mirror:
                     print("Mirror host is down, trying it next time")
@@ -651,7 +662,14 @@ does't exists on the target remote filesystem""" % last_inc)
         self.loop_run(self._async_wait(all_fs, async_send_cleanup))
         for fs_chunk in split_list(all_fs, MAX_AUTOSNAP_NR):
             self.loop_run(self._async_wait(fs_chunk, self._autosnap, dict(snap_name=snap_name)))
-            self.loop_run(asyncio.wait(self._autosnap_send(fs_chunk, snap_name)))
+            tasks_results = self.loop_run(asyncio.gather(
+                *self._autosnap_send(fs_chunk, snap_name))
+            )
+            for task in tasks_results:
+                if task.has_run:
+                    task.fs.write_snap_file('autosnap', task.snap_name)
+                else:
+                    print("autosnap for fs: %(fs)s, with snap_name: %(snap_name)s, failed" % task._asdict())
         self.loop_run(self._async_wait(all_fs, async_mount_cleanup))
         self.loop_run(self._async_wait(all_fs, async_activate_start))
 
