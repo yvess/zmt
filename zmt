@@ -17,6 +17,7 @@ from asyncio.subprocess import PIPE
 
 AUTOSNAP_DATESTR = '%Y-%m-%d_%H:%M:%S'
 MAX_AUTOSNAP_NR = 4
+LOCK_FILE = '/var/lib/zmt/%s.lock'
 
 
 def split_list(long_list, size):
@@ -348,7 +349,7 @@ class ZfsTools:
             fs_to_snap = self._all_to_fs(self.args.items)
         else:
             fs_to_snap = self.running
-        self.loop_run(asyncio.wait(self._autosnap_pre_checks()))
+        self._create_lock('autosnap')
         for fs_chunk in split_list(fs_to_snap, MAX_AUTOSNAP_NR):
             self.loop_run(asyncio.wait(self._autosnap(fs_chunk, snap_name)))
             tasks_results = self.loop_run(asyncio.gather(
@@ -360,30 +361,17 @@ class ZfsTools:
                 else:
                     msg = "autosnap for fs: %(fs)s, with snap_name: %(snap_name)s, failed"
                     print(msg % task._asdict())
+        self._remove_lock('autosnap')
 
-    def _autosnap_pre_checks(self):
-        async def async_check_other():
-            # check if other autosnap is running
-            eq_check = 1 if self.args.command == 'autosnap' else 0
-            returncode = await self.cmd.call(
-                'test $(pgrep -c -f "^python3 %s autosnap") -eq %s' % (self.zmt_path, eq_check),
-                shell=True, run_async=True
-            )
-            if returncode != 0:
-                print("other autosnap is running, not autosnapping")
-                exit(1)
+    def _create_lock(self, kind):
+        if not os.path.exists(LOCK_FILE % kind):
+            open(LOCK_FILE % kind, 'a').close()
+        else:
+            print("other %s is running, aborting" % kind)
+            exit(1)
 
-        async def async_check_move():
-            # check if a move is running
-            eq_check = 1 if self.args.command == 'move' else 0
-            returncode = await self.cmd.call(
-                'test $(pgrep -c -f "^python3 %s move") -eq %s' % (self.zmt_path, eq_check),
-                shell=True, run_async=True
-            )
-            if returncode != 0:
-                print("other move is running, not autosnapping")
-                exit(1)
-        return [async_check_other(), async_check_move()]
+    def _remove_lock(self, kind):
+        os.remove(LOCK_FILE % kind)
 
     def _autosnap(self, fs_to_snap, snap_name):
         if not isinstance(fs_to_snap, list):
@@ -658,8 +646,8 @@ does't exists on the target remote filesystem""" % last_inc)
                 print('No running container/vm found')
                 exit(1)
 
+        self._create_lock('autosnap')
         self.loop_run(self._async_wait(all_fs, async_check_autosnap))
-        self.loop_run(asyncio.wait(self._autosnap_pre_checks()))
         self.stop(all_fs)
         self.loop_run(self._async_wait(all_fs, async_check_in_use))
         self.loop_run(self._async_wait(all_fs, async_send_cleanup))
@@ -676,6 +664,7 @@ does't exists on the target remote filesystem""" % last_inc)
                     print(msg % task._asdict())
         self.loop_run(self._async_wait(all_fs, async_mount_cleanup))
         self.loop_run(self._async_wait(all_fs, async_activate_start))
+        self._remove_lock('autosnap')
 
     async def _compose(self, fs, compose_cmd="stop", run_async=False):
         if fs.kind == 'container':
@@ -714,6 +703,7 @@ does't exists on the target remote filesystem""" % last_inc)
             fs_to_backup = self.managed_fs
 
         failures = ''
+        self._create_lock('backup')
         for fs in fs_to_backup:
             try:
                 last_inc = fs.inc_from_file(snap_type='backup', inc_as_stream=False)
@@ -761,6 +751,7 @@ does't exists on the target remote filesystem""" % last_inc)
         if failures:
             print(failures)
             sys.exit(1)
+        self._remove_lock('backup')
 
     def _list_snaps(self, zfs_root, fs_name):
         cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_root}/{fs_name}|'
