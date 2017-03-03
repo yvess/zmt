@@ -358,7 +358,8 @@ class ZfsTools:
                 if task.has_run:
                     task.fs.write_snap_file('autosnap', task.snap_name)
                 else:
-                    print("autosnap for fs: %(fs)s, with snap_name: %(snap_name)s, failed" % task._asdict())
+                    msg = "autosnap for fs: %(fs)s, with snap_name: %(snap_name)s, failed"
+                    print(msg % task._asdict())
 
     def _autosnap_pre_checks(self):
         async def async_check_other():
@@ -551,7 +552,6 @@ class ZfsTools:
                 await self._compose(fs, cmd, run_async=True)
             if fs.kind == 'vm':
                 await self._virsh(fs, cmd, run_async=True)
-                returncode = 0
 
         def check_vm_stop_complete(all_fs):
             all_running_vms = set(self.cmd.output('virsh list --name'))
@@ -588,7 +588,9 @@ class ZfsTools:
             await self._zfs_mirror_exec('get -H -o value mounted', fs, extra='|grep -q no')
             last_inc = fs.autosnap_file
             try:
-                await self._zfs_mirror_exec('list -H -o name -r -d 1 -t snap', fs, extra='|grep -q %s' % last_inc)
+                await self._zfs_mirror_exec(
+                    'list -H -o name -r -d 1 -t snap', fs, extra='|grep -q %s' % last_inc
+                )
             except subprocess.CalledProcessError:
                 print("""stopping move, the previous autosnap (%s) \
 does't exists on the target remote filesystem""" % last_inc)
@@ -630,6 +632,7 @@ does't exists on the target remote filesystem""" % last_inc)
 
         def async_activate_start(fs):
             tasks = []
+
             async def async_activate_mirror(fs):
                 await self._zmt_mirror_exec("activate %s" % fs.longname, fs)
             tasks.append(async_activate_mirror(fs))
@@ -669,7 +672,8 @@ does't exists on the target remote filesystem""" % last_inc)
                 if task.has_run:
                     task.fs.write_snap_file('autosnap', task.snap_name)
                 else:
-                    print("autosnap for fs: %(fs)s, with snap_name: %(snap_name)s, failed" % task._asdict())
+                    msg = "autosnap for fs: %(fs)s, with snap_name: %(snap_name)s, failed"
+                    print(msg % task._asdict())
         self.loop_run(self._async_wait(all_fs, async_mount_cleanup))
         self.loop_run(self._async_wait(all_fs, async_activate_start))
 
@@ -681,7 +685,8 @@ does't exists on the target remote filesystem""" % last_inc)
                 compose_file = 'docker-compose.yml'
             zfs_mountpoint = self._fs_mountpoint(fs)
             await self.cmd.call(
-                'docker-compose -f %s %s' % (compose_file, compose_cmd), cwd=zfs_mountpoint, run_async=run_async
+                'docker-compose -f %s %s' % (compose_file, compose_cmd),
+                cwd=zfs_mountpoint, run_async=run_async
             )
 
     async def _virsh(self, fs, virsh_cmd="start", run_async=False):
@@ -730,7 +735,8 @@ does't exists on the target remote filesystem""" % last_inc)
                         cmd = 'zfs send {last_inc} {snap_root}@{snap_name}|\
                                zfs recv -u {snap_backup_root}'.format(
                             zfs_backup=fs.zfs_backup, fs=fs.name, last_inc=last_inc,
-                            snap_name=snap_name, snap_root=snap_root, snap_backup_root=snap_backup_root
+                            snap_name=snap_name, snap_root=snap_root,
+                            snap_backup_root=snap_backup_root
                         )
                         if not self.args.test:
                             self.cmd.output(cmd, shell=True)
@@ -820,20 +826,21 @@ does't exists on the target remote filesystem""" % last_inc)
             def create_rsync_cmd(host_src):
                 dest = '%s/%s' % (self.config['rsync']['dest_path'], fs)
                 dest = dest if '/' == dest[:-1] else "%s/" % dest
-                excludes = ['--exclude=%s' % exclude for exclude in self.config['rsync']['excludes'].split(',')]
+                excludes = [
+                    '--exclude=%s' % exclude
+                    for exclude in self.config['rsync']['excludes'].split(',')
+                ]
+
                 excludes.insert(0, '')  # space between options
                 host_src, delimiter, extra_options = host_src.partition('|')
                 if extra_options:
                     extra_options = extra_options.split('|')
                     extra_options.insert(0, '')  # space between options
-                cmd = 'rsync {dry_run}{verbose}{options}{excludes}{extra_options} {host_src} {dest}'.format(
-                    dry_run=dry_run,
-                    verbose=verbose,
-                    options=self.config['rsync']['cmd_options'],
-                    excludes=' '.join(excludes),
-                    extra_options=' '.join(extra_options),
-                    host_src=host_src,
-                    dest=dest
+                cmd = 'rsync {dry_run}{verbose}{options}{excludes}{extra_options} {host_src} {dest}'
+                cmd = cmd.format(
+                    dry_run=dry_run, verbose=verbose, options=self.config['rsync']['cmd_options'],
+                    excludes=' '.join(excludes), extra_options=' '.join(extra_options),
+                    host_src=host_src, dest=dest
                 )
                 # extract hostname
                 host_name = host_src.split(':')[0].split('@')[-1]
@@ -989,7 +996,7 @@ class ZfsParser:
     def parser_autostart(self, subparsers):
         parser = self.subparsers.add_parser(
             'autostart',
-            help='mount and start all containers/vms'
+            help='mount and start all activated containers/vms'
         )
         parser.set_defaults(command='autostart')
 
@@ -1108,7 +1115,7 @@ class ZfsParser:
     def parser_inspect(self, subparsers):
         parser = self.subparsers.add_parser(
             'inspect',
-            help='inspect zmt'
+            help='compare autosnap version of current host and mirror host'
         )
         parser.set_defaults(command='inspect')
 
