@@ -235,6 +235,38 @@ class Filesystem:
         return hash(tuple(sorted(self.__dict__.items())))
 
 
+class FilesystemManager:
+    def __init__(self, config=None, autoparse=True):
+        self.containers, self.vms = [], []
+        if config:
+            if 'container' in config:
+                self.containers = config['container']['managed'].split(',')
+            if 'vm' in config:
+                self.vms = config['vm']['managed'].split(',')
+            self.fs = (
+                self._all_to_fs(self.vms) +
+                self._all_to_fs(self.containers)
+            )
+
+    def _all_to_fs(self, items):
+        kind_items = []
+        for item in items:
+            if item in self.vms and item in self.containers:
+                raise RuntimeError(
+                    "The item name is ambiguous. Please be more specific with @vm or @container"
+                )
+            if '@vm' in item or '@container' in item:
+                name, kind = item.split('@')
+            else:
+                if item in self.vms:
+                    kind = 'vm'
+                if item in self.containers:
+                    kind = 'container'
+                name = item
+            kind_items.append(Filesystem(name, kind, self.config))
+        return kind_items
+
+
 class ZfsTools:
     def __init__(self, args, config):
         self.loop = asyncio.get_event_loop()
@@ -243,8 +275,8 @@ class ZfsTools:
         self.args = args
         self.config = config
         self.running = []
-        self.managed_containers, self.managed_vms = [], []
         self.zmt_path = os.path.abspath(sys.argv[0])
+        self.fsmanager = FilesystemManager(config)
         if 'container' in self.config:
             self.managed_containers = self.config['container']['managed'].split(',')
         if 'vm' in self.config:
@@ -320,24 +352,6 @@ class ZfsTools:
             return True
         else:
             return False
-
-    def _all_to_fs(self, items):
-        kind_items = []
-        for item in items:
-            if item in self.managed_vms and item in self.managed_containers:
-                raise RuntimeError(
-                    "The item name is ambiguous. Please be more specific with @vm or @container"
-                )
-            if '@vm' in item or '@container' in item:
-                name, kind = item.split('@')
-            else:
-                if item in self.managed_vms:
-                    kind = 'vm'
-                if item in self.managed_containers:
-                    kind = 'container'
-                name = item
-            kind_items.append(Filesystem(name, kind, self.config))
-        return kind_items
 
     def autosnap(self):
         if not os.path.exists('/var/lib/zmt/autosnap/'):
