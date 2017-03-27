@@ -88,7 +88,9 @@ class Filesystem:
         self.cmd = Cmd()
         self.name = name.strip()
         self.kind = kind
-        self.zfs_main = config[kind]['zfs_main']
+        self.zfs_main = None
+        if 'zfs_main' in config[kind]:
+            self.zfs_main = config[kind]['zfs_main']
         self.zfs_backup = None
         if 'zfs_backup' in config[kind]:
             self.zfs_backup = config[kind]['zfs_backup']
@@ -237,18 +239,30 @@ class Filesystem:
 
 class FilesystemManager:
     def __init__(self, config=None, autoparse=True):
-        self.containers, self.vms = [], []
+        self.containers, self.vms, self.rsync, self.scripts = [], [], [], []
+        self.config = config
         if config:
             if 'container' in config:
                 self.containers = config['container']['managed'].split(',')
             if 'vm' in config:
                 self.vms = config['vm']['managed'].split(',')
+            if 'rsync_hosts' in config:
+                for rsync_host in config.items('rsync_hosts'):
+                    name, host_src = rsync_host
+                    self.rsync.append(Filesystem(name, kind='rsync', config=config))
+            if 'scripts_items' in config:
+                for item in config.items('scripts_items'):
+                    name, script = item
+                    self.scripts.append(Filesystem(name, kind='scripts', config=config))
             self.fs = (
-                self._all_to_fs(self.vms) +
-                self._all_to_fs(self.containers)
+                self.all_to_fs(self.vms) +
+                self.all_to_fs(self.containers)
+            )
+            self.fs_backup = (
+                self.fs + self.rsync + self.scripts
             )
 
-    def _all_to_fs(self, items):
+    def all_to_fs(self, items):
         kind_items = []
         for item in items:
             if item in self.vms and item in self.containers:
@@ -277,14 +291,6 @@ class ZfsTools:
         self.running = []
         self.zmt_path = os.path.abspath(sys.argv[0])
         self.fsmanager = FilesystemManager(config)
-        if 'container' in self.config:
-            self.managed_containers = self.config['container']['managed'].split(',')
-        if 'vm' in self.config:
-            self.managed_vms = self.config['vm']['managed'].split(',')
-        self.managed_fs = (
-            self._all_to_fs(self.managed_vms) +
-            self._all_to_fs(self.managed_containers)
-        )
 
     def close(self):
         self.loop.close()
@@ -304,7 +310,7 @@ class ZfsTools:
         try:
             if not isinstance(item, (list, tuple)):
                 item = [item]
-            fs = self._all_to_fs(item)[0]
+            fs = self.all_to_fs(item)[0]
         except UnboundLocalError:
             print("The filesystem doesn't exists")
             exit(1)
@@ -327,7 +333,7 @@ class ZfsTools:
     async def _running_vms(self):
         returncode, running_vms = await self.cmd.output('virsh list --name', run_async=True)
         return self._make_running_list(
-            running_vms, self.managed_vms, kind='vm'
+            running_vms, self.fsmanager.vms, kind='vm'
         )
 
     async def _running_containers(self):
@@ -360,7 +366,7 @@ class ZfsTools:
         self._check_running()
         snap_name = self._create_autosnap_name()
         if self.args.items:
-            fs_to_snap = self._all_to_fs(self.args.items)
+            fs_to_snap = self.all_to_fs(self.args.items)
         else:
             fs_to_snap = self.running
         self._create_lock('autosnap')
@@ -442,7 +448,7 @@ class ZfsTools:
     def inspect(self):
         print('# config ')
         print('managed_containers: %s' % ", ".join(self.managed_containers))
-        print('managed_vms: %s' % ", ".join(self.managed_vms))
+        print('managed_vms: %s' % ", ".join(self.fsmanager.vms))
         print()
         print('# running filesystems')
         self._update_running()
@@ -518,7 +524,7 @@ class ZfsTools:
             await asyncio.sleep(0)
 
     def _autosnap_fs(self):
-        return self._all_to_fs(os.listdir('/var/lib/zmt/autosnap'))
+        return self.all_to_fs(os.listdir('/var/lib/zmt/autosnap'))
 
     def mount(self):
         tasks = []
@@ -706,6 +712,81 @@ does't exists on the target remote filesystem""" % last_inc)
                     backup_snap_names[snap_root] = snap_name
         return backup_snap_names
 
+    def _offsite_snap_names(self, snap_names, src_host):
+        offsite_snap_names = OrderedDict()
+        for snap_fullname in snap_names:
+            snap_root, snap_name = snap_fullname.split("@")
+            snap_src_root = snap_root
+            if snap_src_root not in offsite_snap_names:
+                offsite_snap_names[snap_src_root] = snap_name
+        return offsite_snap_names
+
+    def _zfs_send_receive(self, fs, snap_type='backup', fs_src='main',
+                          src_host=None, zfs_dest_replace=None):
+        failures = ''
+        try:
+            last_inc = fs.inc_from_file(snap_type=snap_type, inc_as_stream=False)
+
+            if src_host:
+                cmd = 'ssh {src_host} "zfs list -H -S creation -r -o name -t snap {zfs_src_root}/{fs}"'.format(
+                    src_host=src_host, zfs_src_root=getattr(fs, "zfs_%s" % fs_src),
+                    fs=fs.name, inc=last_inc
+                )
+                src_snap_names = self.cmd.output(cmd, shell=True)
+            else:
+                src_snap_names = self.cmd.output(
+                    'zfs list -H -S creation -r -o name -t snap {zfs_src_root}/{fs}'.format(
+                        zfs_src_root=getattr(fs, "zfs_%s" % fs_src), fs=fs.name, inc=last_inc
+                    )
+                )
+
+            if snap_type == 'backup':
+                src_snap_dict = self._backup_snap_names(src_snap_names)
+            if snap_type == 'offsite':
+                src_snap_dict = self._offsite_snap_names(src_snap_names, src_host)
+            transfer_done = False
+
+            search_and_replace = {
+                'backup': lambda: [fs.zfs_main, fs.zfs_backup],
+                'offsite': lambda: zfs_dest_replace.split('|')
+            }[snap_type]()
+            # send only the newest snapshot from tank to backup
+            for snap_src_root, snap_name in src_snap_dict.items():
+                if (last_inc and not last_inc.split('@')[1] in snap_name) or (not last_inc):
+                    Parameters = namedtuple(
+                        'Parameters', 'snap_src_root, snap_dest_root, snap_name, last_inc, src_host'
+                    )
+                    snap_dest_root = snap_src_root.replace(*search_and_replace)
+                    parameters = Parameters(
+                        snap_src_root, snap_dest_root, snap_name, last_inc, src_host
+                    )
+                    if snap_type == 'backup':
+                        cmd = 'zfs send {last_inc} {snap_src_root}@{snap_name}|\
+                               zfs recv -u {snap_dest_root}'.format(**parameters._asdict())
+                    if snap_type == 'offsite':
+                        cmd = 'ssh {src_host} "zfs send {last_inc} {snap_src_root}@{snap_name}"|\
+                               zfs recv -u {snap_dest_root}'.format(**parameters._asdict())
+                    if not self.args.test:
+                        self.cmd.output(cmd, shell=True)
+                        transfer_done = True
+                    else:
+                        print(cmd.replace('   ', ''))
+                else:
+                    if snap_type == 'backup':
+                        print("no newer snapshot to backup for %s" % snap_src_root)
+
+            if transfer_done:
+                fs.write_snap_file(snap_type, src_snap_dict[getattr(fs, "%s_fs" % fs_src)])
+                # fix mountpoints
+                self.cmd.call(
+                    'zfs set mountpoint=/{snap_dest_root} {snap_dest_root}'.format(
+                        snap_dest_root=getattr(fs, "%s_fs" % fs_src)).replace(*zfs_dest_replace.split('|'))
+                )
+
+        except:
+            failures += traceback.format_exc()
+        return failures
+
     def backup(self):
         if not os.path.exists('/var/lib/zmt/backup/'):
             os.makedirs('/var/lib/zmt/backup/')
@@ -719,49 +800,7 @@ does't exists on the target remote filesystem""" % last_inc)
         failures = ''
         self._create_lock('backup')
         for fs in fs_to_backup:
-            try:
-                last_inc = fs.inc_from_file(snap_type='backup', inc_as_stream=False)
-
-                # get all snapshots from tank
-                snap_names = self.cmd.output(
-                    'zfs list -H -S creation -r -o name -t snap {zfs_main}/{fs}'.format(
-                        zfs_main=fs.zfs_main, fs=fs.name, inc=last_inc,
-                    )
-                )
-
-                backup_snap_names = self._backup_snap_names(snap_names)
-                backup_done = False
-
-                # send only the newest snapshot from tank to backup
-                for snap_root, snap_name in backup_snap_names.items():
-                    if (last_inc and not last_inc.split('@')[1] in snap_name) or (not last_inc):
-                        snap_backup_root = snap_root.replace(fs.zfs_main, fs.zfs_backup)
-                        cmd = 'zfs send {last_inc} {snap_root}@{snap_name}|\
-                               zfs recv -u {snap_backup_root}'.format(
-                            zfs_backup=fs.zfs_backup, fs=fs.name, last_inc=last_inc,
-                            snap_name=snap_name, snap_root=snap_root,
-                            snap_backup_root=snap_backup_root
-                        )
-                        if not self.args.test:
-                            self.cmd.output(cmd, shell=True)
-                            backup_done = True
-                        else:
-                            print(cmd.replace('  ', ''))
-                    else:
-                        print("no newer snapshot to backup for %s" % snap_root)
-
-                if backup_done:
-                    # write last backupsnap
-                    fs.write_snap_file('backup', backup_snap_names[fs.main_fs])
-
-                    # fix mountpoints
-                    self.cmd.output(
-                        'zfs set mountpoint=/{zfs_backup}/{fs} {zfs_backup}/{fs}'.format(
-                            zfs_backup=fs.zfs_backup, fs=fs.name,
-                        )
-                    )
-            except:
-                failures += traceback.format_exc()
+            failures += self._zfs_send_receive(fs)
         if failures:
             print(failures)
             sys.exit(1)
@@ -789,7 +828,7 @@ does't exists on the target remote filesystem""" % last_inc)
         return snap_name
 
     def cleanup(self):
-        for fs in self.managed_fs:
+        for fs in self.fsmanager.fs:
             # normal autosnaps
             if self.args.tank_destroy:
                 snaps = self._list_snaps(fs.zfs_main, fs.name)
@@ -910,27 +949,34 @@ does't exists on the target remote filesystem""" % last_inc)
             print("\n".join(outputs))
 
     def offsite(self):
-        verbose, dry_run = self.args.verbose, self.args.dry_run
         if self.config.has_section('offsite_hosts'):
             if not os.path.exists('/var/lib/zmt/offsite/'):
                 os.makedirs('/var/lib/zmt/offsite/')
+            self._create_lock('offsite')
             for entry in self.config.items('offsite_hosts'):
-                host, target_fs = entry
+                host, zfs_dest_replace = entry
                 offsite_config = configparser.ConfigParser()
                 offsite_config.read_string(self.cmd.output('ssh %s cat /etc/zmt/zmt.ini' % host, split=False))
-                self._offsite_host(host, offsite_config)
+                self._offsite_single_host(host, offsite_config, zfs_dest_replace)
+            self._remove_lock('offsite')
 
-    def _offsite_host(self, host, config):
+    def _offsite_single_host(self, host, config, zfs_dest_replace):
         failures = ''
-        self._create_lock('offsite')
-        fs_to_backup = self.managed_fs
+        fsmanager = FilesystemManager(config)
+        for fs in fsmanager.fs_backup:
+            failures += self._zfs_send_receive(
+                fs, snap_type='offsite', fs_src='backup',
+                src_host=host, zfs_dest_replace=zfs_dest_replace
+            )
+        if failures:
+            print(failures)
 
 
 class ZfsParser:
     def __init__(self):
         self.parser = argparse.ArgumentParser(
             description="""zfs management tools,
-                           for snapshoting, replication, backup""")
+                           for snapshoting, replication, 2222€backup""")
         self.subparsers = self.parser.add_subparsers(
             help='avaiable commands')
         for (fname, func) in inspect.getmembers(self, predicate=inspect.ismethod):
@@ -1143,8 +1189,8 @@ class ZfsParser:
             default='', help='verbose'
         )
         parser.add_argument(
-            '-n', dest='dry_run', const='-n ', action='store_const',
-            default='', help='dry-run, only execute script(s) no snapshot'
+            '-t', '--test', dest='test', action='store_true',
+            default=False, help='only show zfs commands and exit'
         )
         parser.set_defaults(command='offsite')
 
