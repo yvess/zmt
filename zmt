@@ -902,6 +902,14 @@ does't exists on the target remote filesystem""" % last_inc)
                 os.makedirs('/var/lib/zmt/offsite/')
             for entry in self.config.items('offsite_hosts'):
                 host, target_fs = entry
+                offsite_config = configparser.ConfigParser()
+                offsite_config.read_string(self.cmd.output('ssh %s cat /etc/zmt/zmt.ini' % host, split=False))
+                self._offsite_host(host, offsite_config)
+
+    def _offsite_host(self, host, config):
+        failures = ''
+        self._create_lock('offsite')
+        fs_to_backup = self.managed_fs
 
 
 class ZfsParser:
