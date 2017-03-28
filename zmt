@@ -238,43 +238,41 @@ class Filesystem:
 
 
 class FilesystemManager:
-    def __init__(self, config=None, autoparse=True):
+    def __init__(self, config=None, kind='all'):
         self.containers, self.vms, self.rsync, self.scripts = [], [], [], []
+        self.managed_containers, self.managed_vms = [], []
         self.config = config
         if config:
-            if 'container' in config:
-                self.containers = config['container']['managed'].split(',')
-            if 'vm' in config:
-                self.vms = config['vm']['managed'].split(',')
-            if 'rsync_hosts' in config:
+            if 'container' in config and kind in ['all', 'container']:
+                self.managed_containers = ['container']['managed'].split(',')
+                self.containers = self.all_to_fsconfig(self.managed_containers)
+            if 'vm' in config and kind in ['all', 'vm']:
+                self.managed_vms = config['vm']['managed'].split(',')
+                self.vms = self.all_to_fs(self.managed_vms)
+            if 'rsync_hosts' in config and kind in ['all', 'rsync']:
                 for rsync_host in config.items('rsync_hosts'):
                     name, host_src = rsync_host
                     self.rsync.append(Filesystem(name, kind='rsync', config=config))
-            if 'scripts_items' in config:
+            if 'scripts_items' in config and kind in ['all', 'scripts']:
                 for item in config.items('scripts_items'):
                     name, script = item
                     self.scripts.append(Filesystem(name, kind='scripts', config=config))
-            self.fs = (
-                self.all_to_fs(self.vms) +
-                self.all_to_fs(self.containers)
-            )
-            self.fs_backup = (
-                self.fs + self.rsync + self.scripts
-            )
+            self.fs = self.vms + self.containers
+            self.fs_backup = self.vms + self.containers + self.rsync + self.scripts
 
     def all_to_fs(self, items):
         kind_items = []
         for item in items:
-            if item in self.vms and item in self.containers:
+            if item in self.managed_vms and item in self.managed_containers:
                 raise RuntimeError(
                     "The item name is ambiguous. Please be more specific with @vm or @container"
                 )
             if '@vm' in item or '@container' in item:
                 name, kind = item.split('@')
             else:
-                if item in self.vms:
+                if item in self.managed_vms:
                     kind = 'vm'
-                if item in self.containers:
+                if item in self.managed_containers:
                     kind = 'container'
                 name = item
             kind_items.append(Filesystem(name, kind, self.config))
@@ -722,7 +720,7 @@ does't exists on the target remote filesystem""" % last_inc)
         return offsite_snap_names
 
     def _zfs_send_receive(self, fs, snap_type='backup', fs_src='main',
-                          src_host=None, zfs_dest_replace=None):
+                          src_host=None, dest_replace=None):
         failures = ''
         try:
             last_inc = fs.inc_from_file(snap_type=snap_type, inc_as_stream=False)
@@ -748,7 +746,7 @@ does't exists on the target remote filesystem""" % last_inc)
 
             search_and_replace = {
                 'backup': lambda: [fs.zfs_main, fs.zfs_backup],
-                'offsite': lambda: zfs_dest_replace.split('|')
+                'offsite': lambda: dest_replace.split('|')
             }[snap_type]()
             # send only the newest snapshot from tank to backup
             for snap_src_root, snap_name in src_snap_dict.items():
@@ -766,11 +764,11 @@ does't exists on the target remote filesystem""" % last_inc)
                     if snap_type == 'offsite':
                         cmd = 'ssh {src_host} "zfs send {last_inc} {snap_src_root}@{snap_name}"|\
                                zfs recv -u {snap_dest_root}'.format(**parameters._asdict())
+                    if self.args.test or self.args.verbose:
+                        print(cmd.replace('   ', ''))
                     if not self.args.test:
                         self.cmd.output(cmd, shell=True)
                         transfer_done = True
-                    else:
-                        print(cmd.replace('   ', ''))
                 else:
                     if snap_type == 'backup':
                         print("no newer snapshot to backup for %s" % snap_src_root)
@@ -780,7 +778,7 @@ does't exists on the target remote filesystem""" % last_inc)
                 # fix mountpoints
                 self.cmd.call(
                     'zfs set mountpoint=/{snap_dest_root} {snap_dest_root}'.format(
-                        snap_dest_root=getattr(fs, "%s_fs" % fs_src)).replace(*zfs_dest_replace.split('|'))
+                        snap_dest_root=getattr(fs, "%s_fs" % fs_src)).replace(*dest_replace.split('|'))
                 )
 
         except:
@@ -953,21 +951,26 @@ does't exists on the target remote filesystem""" % last_inc)
             if not os.path.exists('/var/lib/zmt/offsite/'):
                 os.makedirs('/var/lib/zmt/offsite/')
             self._create_lock('offsite')
+            self.offsite_processed_fs = []
             for entry in self.config.items('offsite_hosts'):
-                host, zfs_dest_replace = entry
+                host, dest_replace = entry
                 offsite_config = configparser.ConfigParser()
-                offsite_config.read_string(self.cmd.output('ssh %s cat /etc/zmt/zmt.ini' % host, split=False))
-                self._offsite_single_host(host, offsite_config, zfs_dest_replace)
+                offsite_config.read_string(
+                    self.cmd.output('ssh %s cat /etc/zmt/zmt.ini' % host, split=False)
+                )
+                self._offsite_single_host(host, offsite_config, dest_replace=dest_replace)
             self._remove_lock('offsite')
 
-    def _offsite_single_host(self, host, config, zfs_dest_replace):
+    def _offsite_single_host(self, host, offsite_config, dest_replace=None):
         failures = ''
-        fsmanager = FilesystemManager(config)
+        fsmanager = FilesystemManager(config=offsite_config, kind=self.args.kind)
         for fs in fsmanager.fs_backup:
-            failures += self._zfs_send_receive(
-                fs, snap_type='offsite', fs_src='backup',
-                src_host=host, zfs_dest_replace=zfs_dest_replace
-            )
+            if fs.longname not in self.offsite_processed_fs:
+                failures += self._zfs_send_receive(
+                    fs, snap_type='offsite', fs_src='backup',
+                    src_host=host, dest_replace=dest_replace
+                )
+                self.offsite_processed_fs.append(fs.longname)
         if failures:
             print(failures)
 
@@ -1191,6 +1194,23 @@ class ZfsParser:
         parser.add_argument(
             '-t', '--test', dest='test', action='store_true',
             default=False, help='only show zfs commands and exit'
+        )
+        group = parser.add_mutually_exclusive_group()
+        group.add_argument(
+            '--container', dest='kind', action='store_const', const='container',
+            default='all', help='only get container filesystems'
+        )
+        group.add_argument(
+            '--vm', dest='kind', action='store_const', const='vm',
+            default='all', help='only get vm filesystems'
+        )
+        group.add_argument(
+            '--rsync', dest='kind', action='store_const', const='rsync',
+            default='all', help='only get rsync filesystems'
+        )
+        group.add_argument(
+            '--scripts', dest='kind', action='store_const', const='scripts',
+            default='all', help='only get scripts filesystems'
         )
         parser.set_defaults(command='offsite')
 
