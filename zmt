@@ -244,8 +244,8 @@ class FilesystemManager:
         self.config = config
         if config:
             if 'container' in config and kind in ['all', 'container']:
-                self.managed_containers = ['container']['managed'].split(',')
-                self.containers = self.all_to_fsconfig(self.managed_containers)
+                self.managed_containers = config['container']['managed'].split(',')
+                self.containers = self.all_to_fs(self.managed_containers)
             if 'vm' in config and kind in ['all', 'vm']:
                 self.managed_vms = config['vm']['managed'].split(',')
                 self.vms = self.all_to_fs(self.managed_vms)
