@@ -778,7 +778,8 @@ does't exists on the target remote filesystem""" % last_inc)
                 # fix mountpoints
                 self.cmd.call(
                     'zfs set mountpoint=/{snap_dest_root} {snap_dest_root}'.format(
-                        snap_dest_root=getattr(fs, "%s_fs" % fs_src)).replace(*dest_replace.split('|'))
+                        snap_dest_root=snap_dest_root
+                    )
                 )
 
         except:
