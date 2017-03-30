@@ -798,7 +798,7 @@ does't exists on the target remote filesystem""" % last_inc)
         failures = ''
         self._create_lock('backup')
         for fs in fs_to_backup:
-            failures += self._zfs_send_receive(fs)
+            failures += self._zfs_send_receive(fs, snap_type='backup', fs_src='main')
         if failures:
             print(failures)
             sys.exit(1)
