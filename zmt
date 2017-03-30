@@ -1095,6 +1095,10 @@ class ZfsParser:
             default=False, help='only show zfs commands and exit'
         )
         parser.add_argument(
+            '-v', dest='verbose', const='-v ', action='store_const',
+            default='', help='verbose'
+        )
+        parser.add_argument(
             '-s', '--snap-name', dest='backup_snap_name', action='store',
             default='', help=''
         )
