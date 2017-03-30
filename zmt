@@ -748,7 +748,7 @@ does't exists on the target remote filesystem""" % last_inc)
                 'backup': lambda: [fs.zfs_main, fs.zfs_backup],
                 'offsite': lambda: dest_replace.split('|')
             }[snap_type]()
-            # send only the newest snapshot from tank to backup
+            # send only the newest snapshot from src to dest
             for snap_src_root, snap_name in src_snap_dict.items():
                 if (last_inc and not last_inc.split('@')[1] in snap_name) or (not last_inc):
                     Parameters = namedtuple(
@@ -793,7 +793,7 @@ does't exists on the target remote filesystem""" % last_inc)
             fs_to_backup = self.fsmanager.all_to_fs(self.args.items)
         else:
             # proccess all managed fs from zmt.ini
-            fs_to_backup = self.managed_fs
+            fs_to_backup = self.fsmanager.fs
 
         failures = ''
         self._create_lock('backup')
