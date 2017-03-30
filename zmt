@@ -921,31 +921,32 @@ does't exists on the target remote filesystem""" % last_inc)
             sys.exit(1)
 
     def scripts(self):
-        if self.args.item:
-            scripts_items = [(
-                self.args.item, self.config['scripts_items'][self.args.item]
-            )]
-        else:
-            scripts_items = self.config.items('scripts_items')
-        verbose, dry_run = self.args.verbose, self.args.dry_run
-        snap_name = self._create_autosnap_name()
-        outputs = []
-        for fs, script_cmd in scripts_items:
-            output = self.cmd.output(script_cmd)
-            if output:
-                outputs.append("\n\n%s:%s\n%s" % (fs, script_cmd, output))
-            snap_cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(
-                zfs_backup=self.config['scripts']['zfs_backup'],
-                fs=fs, name=snap_name
-            )
-            if verbose:
-                print("* executing script:\n  %s" % script_cmd)
-            if dry_run:
-                print("* zfs snap not done, in dry-run mode")
+        if self.config.has_section('scripts_items'):
+            if self.args.item:
+                scripts_items = [(
+                    self.args.item, self.config['scripts_items'][self.args.item]
+                )]
             else:
-                self.cmd.call(snap_cmd)
-        if outputs:
-            print("\n".join(outputs))
+                scripts_items = self.config.items('scripts_items')
+            verbose, dry_run = self.args.verbose, self.args.dry_run
+            snap_name = self._create_autosnap_name()
+            outputs = []
+            for fs, script_cmd in scripts_items:
+                output = self.cmd.output(script_cmd)
+                if output:
+                    outputs.append("\n\n%s:%s\n%s" % (fs, script_cmd, output))
+                snap_cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(
+                    zfs_backup=self.config['scripts']['zfs_backup'],
+                    fs=fs, name=snap_name
+                )
+                if verbose:
+                    print("* executing script:\n  %s" % script_cmd)
+                if dry_run:
+                    print("* zfs snap not done, in dry-run mode")
+                else:
+                    self.cmd.call(snap_cmd)
+            if outputs:
+                print("\n".join(outputs))
 
     def offsite(self):
         if self.config.has_section('offsite_hosts'):
