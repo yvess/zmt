@@ -776,12 +776,6 @@ does't exists on the target remote filesystem""" % last_inc)
 
             if transfer_done:
                 fs.write_snap_file(snap_type, src_snap_dict[getattr(fs, "%s_fs" % fs_src)])
-                # fix mountpoints
-                self.cmd.call(
-                    'zfs set mountpoint=/{snap_dest_root} {snap_dest_root}'.format(
-                        snap_dest_root=snap_dest_root
-                    )
-                )
 
         except:
             failures += traceback.format_exc()
