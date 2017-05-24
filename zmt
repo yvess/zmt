@@ -456,7 +456,8 @@ class ZfsTools:
                 '''{fs.name}@{fs.kind} host_mirror: {fs.host_mirror} zfs_main:{fs.zfs_main}
 - autosnap_from_file : {fs.autosnap_file}
 - autosnap_zfs_local : {fs.autosnap_local}
-- autosnap_zfs_mirror: {fs.autosnap_mirror}'''.format(fs=fs)
+- autosnap_zfs_mirror: {fs.autosnap_mirror}
+- backup_from_file: {fs.backup_file}'''.format(fs=fs)
             )
             if not fs.is_valid_autosnap():
                 print("ERROR: autosnaps don't match")
@@ -828,16 +829,25 @@ does't exists on the target remote filesystem""" % last_inc)
 
     def cleanup(self):
         for fs in self.fsmanager.fs:
-            # normal autosnaps
-            if self.args.tank_destroy:
-                snaps = self._list_snaps(fs.zfs_main, fs.name)
-                if len(snaps) > fs.autosnaps_keep:
-                    self._destroy_snaps(snaps, fs.autosnaps_keep)
-
             # normal backup snaps
             backupsnaps = self._list_snaps(fs.zfs_backup, fs.name)
             if len(backupsnaps) > fs.backupsnaps_keep:
                 self._destroy_snaps(backupsnaps, fs.backupsnaps_keep)
+
+            # normal autosnaps
+            if self.args.tank_destroy:
+                autosnaps = self._list_snaps(fs.zfs_main, fs.name)
+                newest_backupsnap = backupsnaps[0].partition('@')[-1]
+                keep_autosnaps = [s.partition('@')[-1] for s in autosnaps[:fs.autosnaps_keep]]
+                if len(autosnaps) > fs.autosnaps_keep:
+                    if newest_backupsnap in keep_autosnaps:
+                        self._destroy_snaps(autosnaps, fs.autosnaps_keep)
+                    else:
+                        raise RuntimeError(
+                            "The cleanup would disconnect the filesystem '%s' from backup (%s)" % (
+                                fs.name, newest_backupsnap
+                            )
+                        )
 
         # rsync backup snaps
         if self.config.has_section('rsync_hosts'):
