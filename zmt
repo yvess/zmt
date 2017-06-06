@@ -724,7 +724,8 @@ does't exists on the target remote filesystem""" % last_inc)
                           src_host=None, dest_replace=None):
         failures = ''
         try:
-            last_inc = fs.inc_from_file(snap_type=snap_type, inc_as_stream=False)
+            inc_as_stream = True if snap_type == 'offsite' else False
+            last_inc = fs.inc_from_file(snap_type=snap_type, inc_as_stream=inc_as_stream)
 
             if src_host:
                 cmd = 'ssh {src_host} "zfs list -H -S creation -r -o name -t snap {zfs_src_root}/{fs}"'.format(
