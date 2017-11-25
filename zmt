@@ -15,7 +15,7 @@ from collections import OrderedDict
 import asyncio
 from asyncio.subprocess import PIPE
 
-AUTOSNAP_DATESTR = '%Y-%m-%d_%H:%M:%S'
+AUTOSNAP_DATECMD = 'date +%Y-%m-%dT%H:%M:%S%z'
 MAX_AUTOSNAP_NR = 4
 LOCK_FILE = '/var/lib/zmt/%s.lock'
 
@@ -818,7 +818,7 @@ does't exists on the target remote filesystem""" % last_inc)
                 print(snap_output)
 
     def _create_autosnap_name(self):
-        now_string = datetime.now().strftime(AUTOSNAP_DATESTR)
+        now_string = self.cmd.output(AUTOSNAP_DATECMD, shell=False)[0]
         snap_name = 'autosnap-%s' % now_string
         return snap_name
 
