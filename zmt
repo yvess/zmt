@@ -31,15 +31,15 @@ def split_list(long_list, size):
 
 
 class Cmd:
-    def output(self, cmd, run_async=False, shell=False, split=True, **kwargs):
+    def output(self, cmd, run_async=False, shell=False, split=True, cwd=None, **kwargs):
         # print('# cmd output:', cmd)
         if run_async:
             async def async_cmd():
                 if shell:
-                    process = await asyncio.create_subprocess_shell(cmd, stdout=PIPE)
+                    process = await asyncio.create_subprocess_shell(cmd, cwd=cwd, stdout=PIPE)
                 else:
                     cmd_list = [part for part in cmd.split(' ') if part]
-                    process = await asyncio.create_subprocess_exec(*cmd_list, stdout=PIPE)
+                    process = await asyncio.create_subprocess_exec(*cmd_list, cwd=cwd, stdout=PIPE)
                 output = await process.stdout.read()
                 returncode = await process.wait()
                 if returncode != 0:
@@ -50,8 +50,7 @@ class Cmd:
             if not shell:
                 cmd = [part for part in cmd.split(' ') if part]
             output = subprocess.check_output(
-                cmd,
-                universal_newlines=True, shell=shell
+                cmd, universal_newlines=True, shell=shell, cwd=cwd,
             )
             if split:
                 output = output.strip()
