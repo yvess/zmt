@@ -937,7 +937,8 @@ does't exists on the target remote filesystem""" % last_inc)
             snap_name = self._create_autosnap_name()
             outputs = []
             for fs, script_cmd in scripts_items:
-                output = self.cmd.output(script_cmd)
+                working_dir = self.cmd.output('zfs get mountpoint -o value -H %s' % fs)
+                output = self.cmd.output(script_cmd, cwd=working_dir)
                 if output:
                     outputs.append("\n\n%s:%s\n%s" % (fs, script_cmd, output))
                 snap_cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(
