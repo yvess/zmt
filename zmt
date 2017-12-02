@@ -775,7 +775,7 @@ does't exists on the target remote filesystem""" % last_inc)
                     if self.args.test or self.args.verbose:
                         print(cmd.replace('   ', ''))
                     if not self.args.test:
-                        self.cmd.output(cmd, shell=True)
+                        self.cmd.call(cmd, shell=True)
                         transfer_done = True
                 else:
                     if snap_type == 'backup':
