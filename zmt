@@ -447,10 +447,15 @@ class ZfsTools:
         print('managed_containers: %s' % ", ".join(self.fsmanager.managed_containers))
         print('managed_vms: %s' % ", ".join(self.fsmanager.managed_vms))
         print()
-        print('# running filesystems')
         self._update_running()
 
-        for fs in self.running:
+        if self.args.items:
+            fs_to_inspect = self.fsmanager.all_to_fs(self.args.items)
+        else:
+            fs_to_inspect = self.running
+            print('# running filesystems')
+
+        for fs in fs_to_inspect:
             print(
                 '''{fs.name}@{fs.kind} host_mirror: {fs.host_mirror} zfs_main:{fs.zfs_main}
 - autosnap_from_file : {fs.autosnap_file}
@@ -1233,6 +1238,7 @@ class ZfsParser:
             'inspect',
             help='compare autosnap version of current host and mirror host'
         )
+        parser.add_argument('items', nargs='*', default=None)
         parser.set_defaults(command='inspect')
 
 
