@@ -957,12 +957,12 @@ does't exists on the target remote filesystem""" % last_inc)
                 print("\n".join(outputs))
 
     def offsite(self):
-        if self.config.has_section('offsite_hosts'):
+        if self.config.has_section('offsite_items'):
             if not os.path.exists('/var/lib/zmt/offsite/'):
                 os.makedirs('/var/lib/zmt/offsite/')
             self._create_lock('offsite')
             self.offsite_processed_fs = []
-            for entry in self.config.items('offsite_hosts'):
+            for entry in self.config.items('offsite_items'):
                 host, dest_replace = entry
                 offsite_config = configparser.ConfigParser()
                 offsite_config.read_string(
