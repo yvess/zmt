@@ -726,6 +726,19 @@ does't exists on the target remote filesystem""" % last_inc)
                 offsite_snap_names[snap_src_root] = snap_name
         return offsite_snap_names
 
+    def is_dest_not_changed(self, snap_dest_root, last_inc):
+        _, _, snap_name = last_inc.partition('@')
+        cmd = 'zfs diff {}@{}'.format(snap_dest_root, snap_name)
+        try:
+            output = self.cmd.output(cmd)
+            if output == []:
+                return True
+            else:
+                return False
+        except subprocess.CalledProcessError:
+                print("someting went wrong with {}".format(cmd))
+                exit(1)
+
     def _zfs_send_receive(self, fs, snap_type='backup', fs_src='main',
                           src_host=None, dest_replace=None):
         failures = ''
@@ -766,17 +779,24 @@ does't exists on the target remote filesystem""" % last_inc)
                     parameters = Parameters(
                         snap_src_root, snap_dest_root, snap_name, last_inc, src_host
                     )
-                    if snap_type == 'backup':
-                        cmd = 'zfs send {last_inc} {snap_src_root}@{snap_name}|\
-                               zfs recv -u {snap_dest_root}'.format(**parameters._asdict())
-                    if snap_type == 'offsite':
-                        cmd = 'ssh {src_host} "zfs send {last_inc} {snap_src_root}@{snap_name}"|\
-                               zfs recv -u {snap_dest_root}'.format(**parameters._asdict())
-                    if self.args.test or self.args.verbose:
-                        print(cmd.replace('   ', ''))
-                    if not self.args.test:
-                        self.cmd.call(cmd, shell=True)
-                        transfer_done = True
+                    if self.is_dest_not_changed(parameters.snap_dest_root, parameters.last_inc):
+                        if snap_type == 'backup':
+                            cmd = 'zfs send {last_inc} {snap_src_root}@{snap_name}|\
+                                   zfs recv -u {snap_dest_root}'.format(**parameters._asdict())
+                        if snap_type == 'offsite':
+                            cmd = 'ssh {src_host} "zfs send {last_inc} {snap_src_root}@{snap_name}"|\
+                                   zfs recv -u {snap_dest_root}'.format(**parameters._asdict())
+                        if self.args.test or self.args.verbose:
+                            print(cmd.replace('   ', ''))
+                        if not self.args.test:
+                            self.cmd.call(cmd, shell=True)
+                            transfer_done = True
+                    else:
+                        transfer_done = False
+                        _, _, snap_name = last_inc.partition('@')
+                        print("can't receive snapshot destination was changed please rollback {}@{}".format(
+                            parameters.snap_dest_root, snap_name
+                        ))
                 else:
                     if snap_type == 'backup':
                         print("no newer snapshot to backup for %s" % snap_src_root)
