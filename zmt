@@ -248,8 +248,8 @@ class FilesystemManager:
             if 'vm' in config and kind in ['all', 'vm']:
                 self.managed_vms = config['vm']['managed'].split(',')
                 self.vms = self.all_to_fs(self.managed_vms)
-            if 'rsync_hosts' in config and kind in ['all', 'rsync']:
-                for rsync_host in config.items('rsync_hosts'):
+            if 'rsync_items' in config and kind in ['all', 'rsync']:
+                for rsync_host in config.items('rsync_items'):
                     name, host_src = rsync_host
                     self.rsync.append(Filesystem(name, kind='rsync', config=config))
             if 'scripts_items' in config and kind in ['all', 'scripts']:
@@ -845,8 +845,8 @@ does't exists on the target remote filesystem""" % last_inc)
                         )
 
         # rsync backup snaps
-        if self.config.has_section('rsync_hosts'):
-            for fs_name, host_src in self.config.items('rsync_hosts'):
+        if self.config.has_section('rsync_items'):
+            for fs_name, host_src in self.config.items('rsync_items'):
                 backupsnaps = self._list_snaps(self.config['rsync']['zfs_backup'], fs_name)
                 backupsnaps_keep = int(self.config['defaults']['backupsnaps_keep'])
                 if ('backupsnaps_keep_%s' % fs_name) in self.config['rsync']:
@@ -859,16 +859,16 @@ does't exists on the target remote filesystem""" % last_inc)
 
     def rsync(self):
         if self.args.host:
-            rsync_hosts = [(
-                self.args.host, self.config['rsync_hosts'][self.args.host]
+            rsync_items = [(
+                self.args.host, self.config['rsync_items'][self.args.host]
             )]
         else:
-            rsync_hosts = self.config.items('rsync_hosts')
+            rsync_items = self.config.items('rsync_items')
         snap_name = self._create_autosnap_name()
         verbose, dry_run = self.args.verbose, self.args.dry_run
 
         failures = ''
-        for fs, host_src in rsync_hosts:
+        for fs, host_src in rsync_items:
             current_failure_tries = 3
 
             def create_rsync_cmd(host_src):
