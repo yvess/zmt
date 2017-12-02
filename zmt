@@ -242,11 +242,11 @@ class FilesystemManager:
         self.managed_containers, self.managed_vms = [], []
         self.config = config
         if config:
-            if 'container' in config and kind in ['all', 'container']:
-                self.managed_containers = config['container']['managed'].split(',')
+            if 'container' in config and 'container_items' in config and kind in ['all', 'container']:
+                self.managed_containers = [name for name, options in self.config.items('container_items')]
                 self.containers = self.all_to_fs(self.managed_containers)
-            if 'vm' in config and kind in ['all', 'vm']:
-                self.managed_vms = config['vm']['managed'].split(',')
+            if 'vm' in config and 'vm_items' in config and kind in ['all', 'vm']:
+                self.managed_vms =  [name for name, options in self.config.items('vm_items')]
                 self.vms = self.all_to_fs(self.managed_vms)
             if 'rsync_items' in config and kind in ['all', 'rsync']:
                 for rsync_host in config.items('rsync_items'):
