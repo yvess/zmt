@@ -789,6 +789,7 @@ does't exists on the target remote filesystem""" % last_inc)
                         if self.args.test or self.args.verbose:
                             print(cmd.replace('   ', ''))
                         if not self.args.test:
+                            self.cmd.call('zfs set readonly=on {}'.format(parameters.snap_dest_root))
                             self.cmd.call(cmd, shell=True)
                             transfer_done = True
                     else:
