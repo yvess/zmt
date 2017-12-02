@@ -457,11 +457,13 @@ class ZfsTools:
 
         for fs in fs_to_inspect:
             print(
-                '''{fs.name}@{fs.kind} host_mirror: {fs.host_mirror} zfs_main:{fs.zfs_main}
-- autosnap_from_file : {fs.autosnap_file}
-- autosnap_zfs_local : {fs.autosnap_local}
-- autosnap_zfs_mirror: {fs.autosnap_mirror}
-- backup_from_file: {fs.backup_file}'''.format(fs=fs)
+                '''{fs.name}@{fs.kind} host_mirror:{fs.host_mirror} zfs_main:{fs.zfs_main}
+- main fs:             {fs.main_fs}
+- backup fs:           {fs.backup_fs}
+- autosnap_from_file:  @{fs.autosnap_file}
+- autosnap_zfs_local:  @{fs.autosnap_local}
+- autosnap_zfs_mirror: @{fs.autosnap_mirror}
+- backup_from_file:    @{fs.backup_file}'''.format(fs=fs)
             )
             if not fs.is_valid_autosnap():
                 print("ERROR: autosnaps don't match")
