@@ -315,9 +315,9 @@ class ZfsTools:
     def _running_tasks(self):
         tasks = []
         if self.fsmanager.managed_vms:
-            tasks.apppend(self._running_vms())
+            tasks.append(self._running_vms())
         if self.fsmanager.managed_containers:
-            tasks.apppend(self._running_containers())
+            tasks.append(self._running_containers())
         return tasks
 
     def _make_running_list(self, items, managed_items, kind='vm'):
@@ -398,20 +398,22 @@ class ZfsTools:
         # create the local snapshots
         tasks = []
         for fs in fs_to_snap:
-            async def async_snap(fs):
+            async def async_snap(fs, test=False, verbose=''):
                 cmd = 'zfs snap -r {zfs_main}/{fs}@{snap_name}'.format(
                     zfs_main=fs.zfs_main, fs=fs.name, snap_name=snap_name
                 )
-                if self.args.test or self.args.verbose:
+                if test or verbose:
                     print(cmd.replace('   ', ''))
-                if self.args.test:
+                if test:
                     returncode = await self.cmd.call('true', run_async=True)
                 else:
                     returncode = await self.cmd.call(cmd, run_async=True)
                 if returncode != 0:
                     print("autosnap went wrong")
                     exit(1)
-            tasks.append(async_snap(fs))
+            test = self.args.test if 'test' in self.args else False
+            verbose = self.args.verbose if 'verbose' in self.args else ''
+            tasks.append(async_snap(fs, test=test, verbose=verbose))
         return tasks
 
     def _autosnap_send(self, fs_to_snap, snap_name):
