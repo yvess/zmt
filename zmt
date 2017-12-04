@@ -90,6 +90,11 @@ class Filesystem:
         self.zfs_main = kd_conf['zfs_main'] if 'zfs_main' in kd_conf else None
         self.zfs_backup = kd_conf['zfs_backup'] if 'zfs_backup' in kd_conf else None
         self.zfs_backup_host = kd_conf['zfs_backup_host'] if 'zfs_backup_host' in kd_conf else None
+        self.options = {}
+        if "%s_items" % kind in config and name in config["%s_items" % kind]:
+            options_str = config["%s_items" % kind][name]
+            if kind in ['vm', 'container'] and ':' in options_str:
+                self.options = self._extract_options(options_str)
         self.host_mirror = kd_conf['host_mirror'] if 'host_mirror' in kd_conf else None
         self.autosnaps_keep = int(kd_conf['autosnaps_keep'] if 'autosnaps_keep' in kd_conf else def_conf['autosnaps_keep'])
         self.backupsnaps_keep = int(def_conf['backupsnaps_keep'])
@@ -97,6 +102,13 @@ class Filesystem:
             self.backupsnaps_keep = int(kd_conf['backupsnaps_keep_%s' % self.name])
         elif 'backupsnaps_keep' in kd_conf:
             self.backupsnaps_keep = int(kd_conf['backupsnaps_keep'])
+
+    def _extract_options(self, options_str):
+        options = {}
+        for option in options_str.split('|'):
+            name, _, value = option.partition(':')
+            options[name] = value
+        return options
 
     @property
     def longname(self):
@@ -564,11 +576,23 @@ class ZfsTools:
         self.loop_run(asyncio.wait(tasks))
 
     def start(self):
+        async def async_pre_start(fs):
+            cmd_pre_start = fs.options['start']
+            returncode = await self.cmd.call(cmd_pre_start, run_async=True)
+
+        pre_tasks = []
+        for fs in self._all_autosnap_fs():
+            if 'start' in fs.options:
+                pre_tasks.append(async_pre_start(fs))
+        if pre_tasks:
+            self.loop_run(asyncio.wait(pre_tasks))
+
         async def async_start(fs):
             if fs.kind == 'container':
                 await self._compose(fs, 'up -d', run_async=True)
             if fs.kind == 'vm':
                 await self._virsh(fs, 'start', run_async=True)
+
         tasks = []
         for fs in self._all_autosnap_fs():
             tasks.append(async_start(fs))
@@ -593,12 +617,22 @@ class ZfsTools:
                 time.sleep(0.5)
                 check_vm_stop_complete(all_fs)
 
+        async def async_post_stop(fs):
+            cmd_post_stop = fs.options['stop']
+            returncode = await self.cmd.call(cmd_post_stop, run_async=True)
+
         tasks = []
         fs_to_stop = all_fs or self._all_autosnap_fs()
         for fs in fs_to_stop:
             tasks.append(async_stop(fs))
         self.loop_run(asyncio.wait(tasks))
         check_vm_stop_complete(fs_to_stop)
+        post_tasks = []
+        for fs in fs_to_stop:
+            if 'stop' in fs.options:
+                post_tasks.append(async_post_stop(fs))
+        if post_tasks:
+            self.loop_run(asyncio.wait(post_tasks))
         self._update_running()
 
     def autostart(self):
