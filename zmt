@@ -148,21 +148,25 @@ class Filesystem:
 
     @property
     def autosnap_mirror(self):
-        zfs_cmd = 'list -r -t snap -d 1 -S creation -o name -H'
-        cmd = 'ssh {fs.host_mirror} zfs {zfs_cmd} {fs.main_fs}|grep "autosnap-"|head -1'.format(
-            zfs_cmd=zfs_cmd, fs=self
-        )
-        autosnap_name = self.cmd.output(cmd, shell=True)[0].partition('@')[-1]
-        if not autosnap_name:
-            print("the last snapshot needs to be a autosnap snapshot from zmt")
-            exit(1)
-        return autosnap_name
+        if self.host_mirror:
+            zfs_cmd = 'list -r -t snap -d 1 -S creation -o name -H'
+            cmd = 'ssh {fs.host_mirror} zfs {zfs_cmd} {fs.main_fs}|grep "autosnap-"|head -1'.format(
+                zfs_cmd=zfs_cmd, fs=self
+            )
+            autosnap_name = self.cmd.output(cmd, shell=True)[0].partition('@')[-1]
+            if not autosnap_name:
+                print("the last snapshot needs to be a autosnap snapshot from zmt")
+                exit(1)
+            return autosnap_name
+        return None
 
     def is_valid_autosnap(self):
-        if self.autosnap_file == self.autosnap_local == self.autosnap_mirror:
+        if self.host_mirror:
+            if self.autosnap_file == self.autosnap_local == self.autosnap_mirror:
+                return True
+        elif self.autosnap_file == self.autosnap_local:
             return True
-        else:
-            return False
+        return False
 
     def _last_snap_from_file(self, snap_type='autosnap'):
         snap_fname = '/var/lib/zmt/%s/%s' % (snap_type, self.longname)
