@@ -516,6 +516,7 @@ class ZfsTools:
         )
 
     def _update_running(self):
+        self.running = []
         running_items = self.loop_run(asyncio.gather(
             *self._running_tasks()
         ))
