@@ -265,7 +265,7 @@ class FilesystemManager:
                 for item in config.items('scripts_items'):
                     name, script = item
                     self.scripts.append(Filesystem(name, kind='scripts', config=config))
-            self.fs = self.vms + self.containers
+            self.fs = self.vms + self.containers + self.plain_items
             self.fs_backup = self.vms + self.containers + self.rsync + self.scripts
 
     def all_to_fs(self, items):
