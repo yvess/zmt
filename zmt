@@ -242,8 +242,8 @@ class Filesystem:
 
 class FilesystemManager:
     def __init__(self, config=None, kind='all'):
-        self.containers, self.vms, self.rsync, self.scripts = [], [], [], []
-        self.managed_containers, self.managed_vms = [], []
+        self.containers, self.vms, self.rsync, self.scripts, self.plain_items = [], [], [], [], []
+        self.managed_containers, self.managed_vms, self.managed_plain_items = [], [], []
         self.config = config
         if config:
             if 'container' in config and 'container_items' in config and kind in ['all', 'container']:
@@ -252,6 +252,9 @@ class FilesystemManager:
             if 'vm' in config and 'vm_items' in config and kind in ['all', 'vm']:
                 self.managed_vms =  [name for name, options in self.config.items('vm_items')]
                 self.vms = self.all_to_fs(self.managed_vms)
+            if 'plain' in config and 'plain_items' in config and kind in ['all', 'plain']:
+                self.managed_plain_items =  [name for name, options in self.config.items('plain_items')]
+                self.plain_items = self.all_to_fs(self.managed_plain_items)
             if 'rsync_items' in config and kind in ['all', 'rsync']:
                 for rsync_host in config.items('rsync_items'):
                     name, host_src = rsync_host
@@ -268,15 +271,17 @@ class FilesystemManager:
         for item in items:
             if item in self.managed_vms and item in self.managed_containers:
                 raise RuntimeError(
-                    "The item name is ambiguous. Please be more specific with @vm or @container"
+                    "The item name is ambiguous. Please be more specific with @vm, @container or @plain"
                 )
-            if '@vm' in item or '@container' in item:
+            if item.partition('@')[-1] in ['vm', 'container', 'plain']:
                 name, kind = item.split('@')
             else:
                 if item in self.managed_vms:
                     kind = 'vm'
-                if item in self.managed_containers:
+                elif item in self.managed_containers:
                     kind = 'container'
+                elif item in self.managed_plain_items:
+                    kind = 'plain'
                 name = item
             kind_items.append(Filesystem(name, kind, self.config))
         return kind_items
@@ -306,7 +311,7 @@ class ZfsTools:
     def _item_to_fs(self):
         item = self.args.item
         if not item:
-            print('No vm/container specified')
+            print('No vm/container/plain specified')
             exit(1)
         try:
             if not isinstance(item, (list, tuple)):
@@ -318,10 +323,12 @@ class ZfsTools:
         return fs
 
     def _running_tasks(self):
-        return (
-            self._running_vms(),
-            self._running_containers()
-        )
+        tasks = []
+        if self.fsmanager.managed_vms:
+            tasks.apppend(self._running_vms())
+        if self.fsmanager.managed_containers:
+            tasks.apppend(self._running_containers())
+        return tasks
 
     def _make_running_list(self, items, managed_items, kind='vm'):
         running_items = [
@@ -379,7 +386,7 @@ class ZfsTools:
             for task in tasks_results:
                 if task.has_run:
                     task.fs.write_snap_file('autosnap', task.snap_name)
-                else:
+                elif not self.args.test:
                     msg = "autosnap for fs: %(fs)s, with snap_name: %(snap_name)s, failed"
                     print(msg % task._asdict())
         self._remove_lock('autosnap')
@@ -402,11 +409,15 @@ class ZfsTools:
         tasks = []
         for fs in fs_to_snap:
             async def async_snap(fs):
-                returncode = await self.cmd.call(
-                    'zfs snap -r {zfs_main}/{fs}@{snap_name}'.format(
-                        zfs_main=fs.zfs_main, fs=fs.name, snap_name=snap_name
-                    ), run_async=True
+                cmd = 'zfs snap -r {zfs_main}/{fs}@{snap_name}'.format(
+                    zfs_main=fs.zfs_main, fs=fs.name, snap_name=snap_name
                 )
+                if self.args.test or self.args.verbose:
+                    print(cmd.replace('   ', ''))
+                if self.args.test:
+                    returncode = await self.cmd.call('true', run_async=True)
+                else:
+                    returncode = await self.cmd.call(cmd, run_async=True)
                 if returncode != 0:
                     print("autosnap went wrong")
                     exit(1)
@@ -417,39 +428,49 @@ class ZfsTools:
         host_mirros_up = {}
         tasks = []
         # send all snapshots over ssh to the host_mirror
+        Result = namedtuple('Result', 'has_run, fs, snap_name')
         for fs in fs_to_snap:
-            if fs.host_mirror and fs.host_mirror not in host_mirros_up:
-                is_up = self._host_is_up(fs.host_mirror)
-                host_mirros_up[fs.host_mirror] = is_up
-            if fs.host_mirror and host_mirros_up[fs.host_mirror]:
-                last_inc = fs.inc_from_file(snap_type='autosnap', inc_as_stream=True)
+            if fs.host_mirror:
+                if fs.host_mirror not in host_mirros_up:
+                    is_up = self._host_is_up(fs.host_mirror)
+                    host_mirros_up[fs.host_mirror] = is_up
+                if host_mirros_up[fs.host_mirror]:
+                    last_inc = fs.inc_from_file(snap_type='autosnap', inc_as_stream=True)
 
-                # send fs to host mirror
-                cmd = 'zfs send -R {inc} {zfs_main}/{fs}@{snap_name}|\
-                       ssh {host_mirror} "zfs recv -u {zfs_main}/{fs}"'.format(
-                    zfs_main=fs.zfs_main, fs=fs.name, host_mirror=fs.host_mirror,
-                    inc=last_inc, snap_name=snap_name
-                )
-
-                async def async_zfs_send(cmd, snap_name, fs):
-                    returncode = await self.cmd.call(
-                        cmd, shell=True, run_async=True
+                    # send fs to host mirror
+                    cmd = 'zfs send -R {inc} {zfs_main}/{fs}@{snap_name}|\
+                           ssh {host_mirror} "zfs recv -u {zfs_main}/{fs}"'.format(
+                        zfs_main=fs.zfs_main, fs=fs.name, host_mirror=fs.host_mirror,
+                        inc=last_inc, snap_name=snap_name
                     )
-                    Result = namedtuple('Result', 'has_run, fs, snap_name')
 
-                    if returncode == 0:
-                        return Result(True, fs, snap_name)
-                    return Result(False, fs, snap_name)
-                tasks.append(async_zfs_send(cmd, snap_name, fs))
+                    async def async_zfs_send(cmd, snap_name, fs):
+                        returncode = await self.cmd.call(
+                            cmd, shell=True, run_async=True
+                        )
+                        if returncode == 0:
+                            return Result(True, fs, snap_name)
+                        return Result(False, fs, snap_name)
+                    tasks.append(async_zfs_send(cmd, snap_name, fs))
+                    if not host_mirros_up[fs.host_mirror]:
+                        print("Mirror host is down, trying it next time")
             else:
-                if fs.host_mirror:
-                    print("Mirror host is down, trying it next time")
+                async def dummy():  # if we don't have a mirror
+                    returncode = await self.cmd.call(
+                        'true', shell=False, run_async=True
+                    )
+                    if self.args.test:
+                        return Result(False, fs, snap_name)
+                    else:
+                        return Result(True, fs, snap_name)
+                tasks.append(dummy())
         return tasks
 
     def inspect(self):
         print('# config ')
         print('managed_containers: %s' % ", ".join(self.fsmanager.managed_containers))
         print('managed_vms: %s' % ", ".join(self.fsmanager.managed_vms))
+        print('managed_plain_items: %s' % ", ".join(self.fsmanager.managed_plain_items))
         print()
         self._update_running()
 
@@ -503,10 +524,12 @@ class ZfsTools:
         )
 
     def _update_running(self):
-        running_vms, running_containers = self.loop_run(asyncio.gather(
+        running_items = self.loop_run(asyncio.gather(
             *self._running_tasks()
         ))
-        self.running = running_vms + running_containers
+        for running_item in running_items:
+            self.running += running_item
+        self.running += self.fsmanager.plain_items
 
     def _check_running(self):
         if not self.args.items and not self.running:
@@ -732,16 +755,23 @@ does't exists on the target remote filesystem""" % last_inc)
 
     def is_dest_not_changed(self, snap_dest_root, last_inc):
         _, _, snap_name = last_inc.partition('@')
-        cmd = 'zfs diff {}@{}'.format(snap_dest_root, snap_name)
-        try:
-            output = self.cmd.output(cmd)
-            if output == []:
-                return True
-            else:
-                return False
-        except subprocess.CalledProcessError:
-                print("someting went wrong with {}".format(cmd))
+        if snap_name:
+            cmd_is_mounted = 'zfs get -o value -H mounted {}'.format(snap_dest_root)
+            cmd_mount = 'zfs mount {}'.format(snap_dest_root)
+            cmd_diff = 'zfs diff {}@{}'.format(snap_dest_root, snap_name)
+            try:
+                is_mounted = self.cmd.output(cmd_is_mounted) == ['yes']
+                if not is_mounted:
+                    self.cmd.call(cmd_mount)
+                output = self.cmd.output(cmd_diff)
+                if output == []:
+                    return True
+                else:
+                    return False
+            except subprocess.CalledProcessError:
+                print("someting went wrong with {}".format(cmd_diff))
                 exit(1)
+        return True
 
     def _zfs_send_receive(self, fs, snap_type='backup', fs_src='main',
                           src_host=None, dest_replace=None):
@@ -793,7 +823,8 @@ does't exists on the target remote filesystem""" % last_inc)
                         if self.args.test or self.args.verbose:
                             print(cmd.replace('   ', ''))
                         if not self.args.test:
-                            self.cmd.call('zfs set readonly=on {}'.format(parameters.snap_dest_root))
+                            if fs.backup_file:
+                                self.cmd.call('zfs set readonly=on {}'.format(parameters.snap_dest_root))
                             self.cmd.call(cmd, shell=True)
                             transfer_done = True
                     else:
@@ -1021,7 +1052,7 @@ class ZfsParser:
     def __init__(self):
         self.parser = argparse.ArgumentParser(
             description="""zfs management tools,
-                           for snapshoting, replication, 2222€backup""")
+                           for snapshoting, replication, backup""")
         self.subparsers = self.parser.add_subparsers(
             help='avaiable commands')
         for (fname, func) in inspect.getmembers(self, predicate=inspect.ismethod):
@@ -1050,6 +1081,14 @@ class ZfsParser:
         parser = self.subparsers.add_parser(
             'autosnap',
             help='create a snapshot'
+        )
+        parser.add_argument(
+            '-t', '--test', dest='test', action='store_true',
+            default=False, help='only show zfs commands and exit'
+        )
+        parser.add_argument(
+            '-v', dest='verbose', const='-v ', action='store_const',
+            default='', help='verbose'
         )
         parser.add_argument('items', nargs='*', default=None)
         parser.set_defaults(command='autosnap')
