@@ -85,28 +85,18 @@ class Cmd:
 class Filesystem:
     def __init__(self, name, kind='vm', config=None):
         self.cmd = Cmd()
-        self.name = name.strip()
-        self.kind = kind
-        self.zfs_main = None
-        if 'zfs_main' in config[kind]:
-            self.zfs_main = config[kind]['zfs_main']
-        self.zfs_backup = None
-        if 'zfs_backup' in config[kind]:
-            self.zfs_backup = config[kind]['zfs_backup']
-
-        self.host_mirror = None
-        if 'host_mirror' in config[kind]:
-            self.host_mirror = config[kind]['host_mirror']
-
-        self.autosnaps_keep = int(config['defaults']['autosnaps_keep'])
-        if 'autosnaps_keep' in config[kind]:
-            self.autosnaps_keep = int(config[kind]['autosnaps_keep'])
-
-        self.backupsnaps_keep = int(config['defaults']['backupsnaps_keep'])
-        if ('backupsnaps_keep_%s' % self.name) in config[kind]:
-            self.backupsnaps_keep = int(config[kind]['backupsnaps_keep_%s' % self.name])
-        elif 'backupsnaps_keep' in config[kind]:
-            self.backupsnaps_keep = int(config[kind]['backupsnaps_keep'])
+        self.name, self.kind = name.strip(), kind
+        kd_conf, def_conf = config[kind], config['defaults']
+        self.zfs_main = kd_conf['zfs_main'] if 'zfs_main' in kd_conf else None
+        self.zfs_backup = kd_conf['zfs_backup'] if 'zfs_backup' in kd_conf else None
+        self.zfs_backup_host = kd_conf['zfs_backup_host'] if 'zfs_backup_host' in kd_conf else None
+        self.host_mirror = kd_conf['host_mirror'] if 'host_mirror' in kd_conf else None
+        self.autosnaps_keep = int(kd_conf['autosnaps_keep'] if 'autosnaps_keep' in kd_conf else def_conf['autosnaps_keep'])
+        self.backupsnaps_keep = int(def_conf['backupsnaps_keep'])
+        if ('backupsnaps_keep_%s' % self.name) in kd_conf:
+            self.backupsnaps_keep = int(kd_conf['backupsnaps_keep_%s' % self.name])
+        elif 'backupsnaps_keep' in kd_conf:
+            self.backupsnaps_keep = int(kd_conf['backupsnaps_keep'])
 
     @property
     def longname(self):
