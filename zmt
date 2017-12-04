@@ -763,25 +763,27 @@ does't exists on the target remote filesystem""" % last_inc)
                 exit(1)
         return True
 
+    def _src_snap_names(self, fs, fs_src, last_inc, src_host=None):
+        if src_host:
+            cmd = 'ssh {src_host} "zfs list -H -S creation -r -o name -t snap {zfs_src_root}/{fs}"'.format(
+                src_host=src_host, zfs_src_root=getattr(fs, "zfs_%s" % fs_src),
+                fs=fs.name, inc=last_inc
+            )
+            src_snap_names = self.cmd.output(cmd, shell=True)
+        else:
+            cmd = 'zfs list -H -S creation -r -o name -t snap {zfs_src_root}/{fs}'.format(
+                zfs_src_root=getattr(fs, "zfs_%s" % fs_src), fs=fs.name, inc=last_inc
+            )
+            src_snap_names = self.cmd.output(cmd)
+        return src_snap_names
+
     def _zfs_send_receive(self, fs, snap_type='backup', fs_src='main',
-                          src_host=None, dest_replace=None):
+                          src_host=None, dest_host=None, dest_replace=None):
         failures = ''
         try:
             inc_as_stream = True if snap_type == 'offsite' else False
             last_inc = fs.inc_from_file(snap_type=snap_type, inc_as_stream=inc_as_stream)
-
-            if src_host:
-                cmd = 'ssh {src_host} "zfs list -H -S creation -r -o name -t snap {zfs_src_root}/{fs}"'.format(
-                    src_host=src_host, zfs_src_root=getattr(fs, "zfs_%s" % fs_src),
-                    fs=fs.name, inc=last_inc
-                )
-                src_snap_names = self.cmd.output(cmd, shell=True)
-            else:
-                src_snap_names = self.cmd.output(
-                    'zfs list -H -S creation -r -o name -t snap {zfs_src_root}/{fs}'.format(
-                        zfs_src_root=getattr(fs, "zfs_%s" % fs_src), fs=fs.name, inc=last_inc
-                    )
-                )
+            src_snap_names = self._src_snap_names(fs, fs_src, last_inc, src_host=src_host)
 
             if snap_type == 'backup':
                 src_snap_dict = self._backup_snap_names(src_snap_names)
@@ -804,18 +806,21 @@ does't exists on the target remote filesystem""" % last_inc)
                         snap_src_root, snap_dest_root, snap_name, last_inc, src_host
                     )
                     if self.is_dest_not_changed(parameters.snap_dest_root, parameters.last_inc):
-                        if snap_type == 'backup':
-                            cmd = 'zfs send {last_inc} {snap_src_root}@{snap_name}|\
-                                   zfs recv -u {snap_dest_root}'.format(**parameters._asdict())
-                        if snap_type == 'offsite':
-                            cmd = 'ssh {src_host} "zfs send {last_inc} {snap_src_root}@{snap_name}"|\
-                                   zfs recv -u {snap_dest_root}'.format(**parameters._asdict())
+                        zfs_send = 'zfs send {last_inc} {snap_src_root}@{snap_name}'.format(**parameters._asdict())
+                        zfs_recv = 'zfs recv -u {snap_dest_root}'.format(**parameters._asdict())
+                        if src_host:
+                            zfs_send = 'ssh {} "{}"'.format(src_host, zfs_send)
+                        if dest_host:
+                            zfs_recv = 'ssh {} "{}"'.format(dest_host, zfs_recv)
                         if self.args.test or self.args.verbose:
-                            print(cmd.replace('   ', ''))
+                            print('{}|{}'.format(zfs_send, zfs_recv).replace('   ', ''))
                         if not self.args.test:
                             if fs.backup_file:
-                                self.cmd.call('zfs set readonly=on {}'.format(parameters.snap_dest_root))
-                            self.cmd.call(cmd, shell=True)
+                                zfs_readonly = 'zfs set readonly=on {}'.format(parameters.snap_dest_root)
+                                if dest_host:
+                                    zfs_readonly = 'ssh {} "{}'.format(dest_host, zfs_readonly)
+                                self.cmd.call(zfs_readonly)
+                            self.cmd.call('{}|{}'.format(zfs_send, zfs_recv), shell=True)
                             transfer_done = True
                     else:
                         transfer_done = False
@@ -847,7 +852,9 @@ does't exists on the target remote filesystem""" % last_inc)
         failures = ''
         self._create_lock('backup')
         for fs in fs_to_backup:
-            failures += self._zfs_send_receive(fs, snap_type='backup', fs_src='main')
+            failures += self._zfs_send_receive(
+                fs, snap_type='backup', fs_src='main', dest_host=fs.zfs_backup_host
+            )
         if failures:
             print(failures)
             sys.exit(1)
