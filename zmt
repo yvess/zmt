@@ -32,7 +32,7 @@ def split_list(long_list, size):
 
 class Cmd:
     def output(self, cmd, run_async=False, shell=False, split=True, cwd=None, **kwargs):
-        # print('# cmd output:', cmd)
+        # print('# cmd output:', cmd) # for debug
         if run_async:
             async def async_cmd():
                 if shell:
@@ -59,7 +59,7 @@ class Cmd:
                 return output.strip()
 
     def call(self, cmd, run_async=False, shell=False, cwd=None, check_returncode=True):
-        # print('# cmd call:', cmd)
+        # print('# cmd call:', cmd) # for debug
         if run_async:
             async def async_exec():
                 if cwd:
@@ -780,18 +780,20 @@ does't exists on the target remote filesystem""" % last_inc)
                 offsite_snap_names[snap_src_root] = snap_name
         return offsite_snap_names
 
-    def is_dest_not_changed(self, snap_dest_root, last_inc):
+    def is_dest_not_changed(self, snap_dest_root, last_inc, dest_host=None):
         _, _, snap_name = last_inc.partition('@')
         if snap_name:
-            cmd_is_mounted = 'zfs get -o value -H mounted {}'.format(snap_dest_root)
-            cmd_mount = 'zfs mount {}'.format(snap_dest_root)
-            cmd_diff = 'zfs diff {}@{}'.format(snap_dest_root, snap_name)
+            cmd_is_mounted, cmd_mount, cmd_diff = self._add_ssh_if_host(
+                'zfs get -H -o value mounted {}'.format(snap_dest_root),
+                'zfs mount {}'.format(snap_dest_root),
+                'zfs diff -H {}@{}'.format(snap_dest_root, snap_name),
+                host=dest_host
+            )
             try:
-                is_mounted = self.cmd.output(cmd_is_mounted) == ['yes']
+                is_mounted = self.cmd.output(cmd_is_mounted, shell=True) == ['yes']
                 if not is_mounted:
-                    self.cmd.call(cmd_mount)
-                output = self.cmd.output(cmd_diff)
-                if output == []:
+                    self.cmd.call(cmd_mount, shell=True)
+                if self.cmd.output(cmd_diff, shell=True) == []:
                     return True
                 else:
                     return False
@@ -813,6 +815,18 @@ does't exists on the target remote filesystem""" % last_inc)
             )
             src_snap_names = self.cmd.output(cmd)
         return src_snap_names
+
+    def _add_ssh_if_host(self, *args, host=None):
+        if not host:
+            if len(args) == 1:
+                return args[0]
+            return args
+        commands = []
+        for cmd in args:
+            commands.append('ssh {} "{}"'.format(host, cmd))
+        if len(commands) == 1:
+            return commands[0]
+        return commands
 
     def _zfs_send_receive(self, fs, snap_type='backup', fs_src='main',
                           src_host=None, dest_host=None, dest_replace=None):
@@ -842,21 +856,24 @@ does't exists on the target remote filesystem""" % last_inc)
                     parameters = Parameters(
                         snap_src_root, snap_dest_root, snap_name, last_inc, src_host
                     )
-                    if self.is_dest_not_changed(parameters.snap_dest_root, parameters.last_inc):
-                        zfs_send = 'zfs send {last_inc} {snap_src_root}@{snap_name}'.format(**parameters._asdict())
-                        zfs_recv = 'zfs recv -u {snap_dest_root}'.format(**parameters._asdict())
-                        if src_host:
-                            zfs_send = 'ssh {} "{}"'.format(src_host, zfs_send)
-                        if dest_host:
-                            zfs_recv = 'ssh {} "{}"'.format(dest_host, zfs_recv)
+                    if self.is_dest_not_changed(parameters.snap_dest_root, parameters.last_inc, dest_host=dest_host):
+                        zfs_send = self._add_ssh_if_host(
+                            'zfs send {last_inc} {snap_src_root}@{snap_name}'.format(**parameters._asdict()),
+                            host=src_host
+                        )
+                        zfs_recv = self._add_ssh_if_host(
+                            'zfs recv -u {snap_dest_root}'.format(**parameters._asdict()),
+                            host=dest_host
+                        )
                         if self.args.test or self.args.verbose:
                             print('{}|{}'.format(zfs_send, zfs_recv).replace('   ', ''))
                         if not self.args.test:
                             if fs.backup_file:
-                                zfs_readonly = 'zfs set readonly=on {}'.format(parameters.snap_dest_root)
-                                if dest_host:
-                                    zfs_readonly = 'ssh {} "{}'.format(dest_host, zfs_readonly)
-                                self.cmd.call(zfs_readonly)
+                                zfs_readonly = self._add_ssh_if_host(
+                                    'zfs set readonly=on {}'.format(parameters.snap_dest_root),
+                                    host=dest_host
+                                )
+                                self.cmd.call(zfs_readonly, shell=True)
                             self.cmd.call('{}|{}'.format(zfs_send, zfs_recv), shell=True)
                             transfer_done = True
                     else:
@@ -885,7 +902,6 @@ does't exists on the target remote filesystem""" % last_inc)
         else:
             # proccess all managed fs from zmt.ini
             fs_to_backup = self.fsmanager.fs
-
         failures = ''
         self._create_lock('backup')
         for fs in fs_to_backup:
