@@ -29,6 +29,19 @@ def split_list(long_list, size):
     lists.append(long_list)
     return lists
 
+def get_config_value(config, name, fs_name='', section='', defaults_fallback=None):
+    if section and section in config:
+        section_fs_name = "{}_{}".format(name, fs_name)
+        if fs_name and section_fs_name in config[section]:
+            return config[section][section_fs_name]
+        elif name in config[section]:
+            return config[section][name]
+    if name in config['defaults']:
+        return config['defaults'][name]
+    elif defaults_fallback in config['defaults']:
+        return config['defaults'][defaults_fallback]
+    return None
+
 
 class Cmd:
     def output(self, cmd, run_async=False, shell=False, split=True, cwd=None, **kwargs):
@@ -86,7 +99,7 @@ class Filesystem:
     def __init__(self, name, kind='vm', config=None):
         self.cmd = Cmd()
         self.name, self.kind = name.strip(), kind
-        kd_conf, def_conf = config[kind], config['defaults']
+        kd_conf = config[kind]
         self.zfs_main = kd_conf['zfs_main'] if 'zfs_main' in kd_conf else None
         self.zfs_backup = kd_conf['zfs_backup'] if 'zfs_backup' in kd_conf else None
         self.zfs_backup_host = kd_conf['zfs_backup_host'] if 'zfs_backup_host' in kd_conf else None
@@ -96,12 +109,8 @@ class Filesystem:
             if kind in ['vm', 'container'] and ':' in options_str:
                 self.options = self._extract_options(options_str)
         self.host_mirror = kd_conf['host_mirror'] if 'host_mirror' in kd_conf else None
-        self.autosnaps_keep = int(kd_conf['autosnaps_keep'] if 'autosnaps_keep' in kd_conf else def_conf['autosnaps_keep'])
-        self.backupsnaps_keep = int(def_conf['backupsnaps_keep'])
-        if ('backupsnaps_keep_%s' % self.name) in kd_conf:
-            self.backupsnaps_keep = int(kd_conf['backupsnaps_keep_%s' % self.name])
-        elif 'backupsnaps_keep' in kd_conf:
-            self.backupsnaps_keep = int(kd_conf['backupsnaps_keep'])
+        self.autosnaps_keep = int(get_config_value(config, 'autosnaps_keep', self.name, section=kind))
+        self.backupsnaps_keep = int(get_config_value(config, 'backupsnaps_keep', self.name, section=kind))
 
     def _extract_options(self, options_str):
         options = {}
@@ -961,12 +970,9 @@ does't exists on the target remote filesystem""" % last_inc)
         if self.config.has_section('rsync_items'):
             for fs_name, host_src in self.config.items('rsync_items'):
                 backupsnaps = self._list_snaps(self.config['rsync']['zfs_backup'], fs_name)
-                backupsnaps_keep = int(self.config['defaults']['backupsnaps_keep'])
-                if ('backupsnaps_keep_%s' % fs_name) in self.config['rsync']:
-                    backupsnaps_keep = int(self.config['rsync']['backupsnaps_keep_%s' % fs_name])
-                elif 'backupsnaps_keep' in self.config['rsync']:
-                    backupsnaps_keep = int(self.config['rsync']['backupsnaps_keep'])
-
+                backupsnaps_keep = int(get_config_value(
+                    self.config, 'backupsnaps_keep', section='rsync', fs_name=fs_name)
+                )
                 if len(backupsnaps) > backupsnaps_keep:
                     self._destroy_snaps(backupsnaps, backupsnaps_keep)
 
