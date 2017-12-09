@@ -480,10 +480,16 @@ class ZfsTools:
         return tasks
 
     def inspect(self):
+        offsite_hosts = []
+        if self.config.has_section('offsite_items'):
+            for entry in self.config.items('offsite_items'):
+                host, dest_replace = entry
+                offsite_hosts.append(host)
         print('# config ')
         print('managed_containers: %s' % ", ".join(self.fsmanager.managed_containers))
         print('managed_vms: %s' % ", ".join(self.fsmanager.managed_vms))
         print('managed_plain_items: %s' % ", ".join(self.fsmanager.managed_plain_items))
+        print('offsite_hosts: %s' % ", ".join(offsite_hosts))
         print()
         self._update_running()
 
@@ -837,6 +843,12 @@ does't exists on the target remote filesystem""" % last_inc)
             return commands[0]
         return commands
 
+    def _set_dest(self, src_root, fs=None, dest_replace=None):
+        if fs:
+            return src_root.replace(fs.zfs_main, fs.zfs_backup)
+        if dest_replace:
+            return src_root.replace(*dest_replace.split('|'))
+
     def _zfs_send_receive(self, fs, snap_type='backup', fs_src='main',
                           src_host=None, dest_host=None, dest_replace=None):
         failures = ''
@@ -851,17 +863,13 @@ does't exists on the target remote filesystem""" % last_inc)
                 src_snap_dict = self._offsite_snap_names(src_snap_names, src_host)
             transfer_done = False
 
-            search_and_replace = {
-                'backup': lambda: [fs.zfs_main, fs.zfs_backup],
-                'offsite': lambda: dest_replace.split('|')
-            }[snap_type]()
             # send only the newest snapshot from src to dest
             for snap_src_root, snap_name in src_snap_dict.items():
                 if (last_inc and not last_inc.split('@')[1] in snap_name) or (not last_inc):
                     Parameters = namedtuple(
                         'Parameters', 'snap_src_root, snap_dest_root, snap_name, last_inc, src_host'
                     )
-                    snap_dest_root = snap_src_root.replace(*search_and_replace)
+                    snap_dest_root = self._set_dest(snap_src_root, fs=fs, dest_replace=dest_replace)
                     parameters = Parameters(
                         snap_src_root, snap_dest_root, snap_name, last_inc, src_host
                     )
@@ -976,6 +984,22 @@ does't exists on the target remote filesystem""" % last_inc)
                 if len(backupsnaps) > backupsnaps_keep:
                     self._destroy_snaps(backupsnaps, backupsnaps_keep)
 
+        # offsite backup snaps
+        if self.config.has_section('offsite_items'):
+            for entry in self.config.items('offsite_items'):
+                host, dest_replace = entry
+                offsite_config = self._offsite_config(host)
+                fsmanager = FilesystemManager(config=offsite_config)
+                for fs in fsmanager.fs_backup:
+                    offsitesnaps = self._list_snaps(self._set_dest(fs.zfs_backup, dest_replace=dest_replace), fs.name)
+                    offsitesnaps_keep = int(get_config_value(
+                        self.config, 'offsitesnaps_keep', section='offsite',
+                        fs_name=fs.name, defaults_fallback='backupsnaps_keep')
+                    )
+
+                    if len(offsitesnaps) > offsitesnaps_keep:
+                        self._destroy_snaps(offsitesnaps, offsitesnaps_keep)
+
     def rsync(self):
         if self.args.host:
             rsync_items = [(
@@ -1075,6 +1099,13 @@ does't exists on the target remote filesystem""" % last_inc)
             if outputs:
                 print("\n".join(outputs))
 
+    def _offsite_config(self, host):
+        offsite_config = configparser.ConfigParser()
+        offsite_config.read_string(
+            self.cmd.output('ssh %s cat /etc/zmt/zmt.ini' % host, split=False)
+        )
+        return offsite_config
+
     def offsite(self):
         if self.config.has_section('offsite_items'):
             if not os.path.exists('/var/lib/zmt/offsite/'):
@@ -1083,10 +1114,7 @@ does't exists on the target remote filesystem""" % last_inc)
             self.offsite_processed_fs = []
             for entry in self.config.items('offsite_items'):
                 host, dest_replace = entry
-                offsite_config = configparser.ConfigParser()
-                offsite_config.read_string(
-                    self.cmd.output('ssh %s cat /etc/zmt/zmt.ini' % host, split=False)
-                )
+                offsite_config = self._offsite_config(host)
                 self._offsite_single_host(host, offsite_config, dest_replace=dest_replace)
             self._remove_lock('offsite')
 
