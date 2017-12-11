@@ -844,10 +844,9 @@ does't exists on the target remote filesystem""" % last_inc)
         return commands
 
     def _set_dest(self, src_root, fs=None, dest_replace=None):
-        if fs:
-            return src_root.replace(fs.zfs_main, fs.zfs_backup)
         if dest_replace:
             return src_root.replace(*dest_replace.split('|'))
+        return src_root.replace(fs.zfs_main, fs.zfs_backup)
 
     def _zfs_send_receive(self, fs, snap_type='backup', fs_src='main',
                           src_host=None, dest_host=None, dest_replace=None):
