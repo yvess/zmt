@@ -99,16 +99,15 @@ class Filesystem:
     def __init__(self, name, kind='vm', config=None):
         self.cmd = Cmd()
         self.name, self.kind = name.strip(), kind
-        kd_conf = config[kind]
-        self.zfs_main = kd_conf['zfs_main'] if 'zfs_main' in kd_conf else None
-        self.zfs_backup = kd_conf['zfs_backup'] if 'zfs_backup' in kd_conf else None
-        self.zfs_backup_host = kd_conf['zfs_backup_host'] if 'zfs_backup_host' in kd_conf else None
+        self.zfs_main = config[kind]['zfs_main'] if 'zfs_main' in config[kind] else None
+        self.zfs_backup = config[kind]['zfs_backup'] if 'zfs_backup' in config[kind] else None
+        self.zfs_backup_host = config[kind]['zfs_backup_host'] if 'zfs_backup_host' in config[kind] else None
         self.options = {}
         if "%s_items" % kind in config and name in config["%s_items" % kind]:
             options_str = config["%s_items" % kind][name]
             if kind in ['vm', 'container'] and ':' in options_str:
                 self.options = self._extract_options(options_str)
-        self.host_mirror = kd_conf['host_mirror'] if 'host_mirror' in kd_conf else None
+        self.host_mirror = config[kind]['host_mirror'] if 'host_mirror' in config[kind] else None
         self.autosnaps_keep = int(get_config_value(config, 'autosnaps_keep', self.name, section=kind))
         self.backupsnaps_keep = int(get_config_value(config, 'backupsnaps_keep', self.name, section=kind))
 
@@ -929,9 +928,11 @@ does't exists on the target remote filesystem""" % last_inc)
             sys.exit(1)
         self._remove_lock('backup')
 
-    def _list_snaps(self, zfs_root, fs_name):
+    def _list_snaps(self, zfs_root, fs_name, host=None):
         cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_root}/{fs_name}|'
-        cmd = (cmd + 'grep "@autosnap-"').format(zfs_root=zfs_root, fs_name=fs_name)
+        cmd = self._add_ssh_if_host((
+            cmd + 'grep "@autosnap-"').format(zfs_root=zfs_root, fs_name=fs_name
+        ), host=host)
         snaps = self.cmd.output(cmd, shell=True)
         return snaps
 
@@ -954,7 +955,7 @@ does't exists on the target remote filesystem""" % last_inc)
     def cleanup(self):
         for fs in self.fsmanager.fs:
             # normal backup snaps
-            backupsnaps = self._list_snaps(fs.zfs_backup, fs.name)
+            backupsnaps = self._list_snaps(fs.zfs_backup, fs.name, host=fs.zfs_backup_host)
             if len(backupsnaps) > fs.backupsnaps_keep:
                 self._destroy_snaps(backupsnaps, fs.backupsnaps_keep)
 
