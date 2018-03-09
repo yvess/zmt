@@ -367,10 +367,8 @@ class ZfsTools:
             return []
 
     def _host_is_up(self, host):
-        if '@' not in host:
-            return True
         # check if host mirror is reachable
-        cmd = 'ping -O -c 1 %s' % host
+        cmd = 'ping -W 1000 -c 1 %s' % host
         ping_exitcode, ping_output = subprocess.getstatusoutput(cmd)
         if ping_exitcode == 0:
             return True
@@ -840,8 +838,8 @@ does't exists on the target remote filesystem""" % last_inc)
         is_up = self._host_is_up(host)
         if is_up:
             pass
-        if not is_up and fallback_host_key in self.conifg['defaults']:
-            fallback_host = self.conifg['defaults'][fallback_host_key]
+        if not is_up and fallback_host_key in self.config['defaults']:
+            fallback_host = self.config['defaults'][fallback_host_key]
             is_up = self._host_is_up(fallback_host)
             if is_up:
                 host = fallback_host
