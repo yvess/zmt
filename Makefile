@@ -5,6 +5,7 @@ test_vmtest1:
 	python3 /develop/src/zmt/zmt autosnap
 	python3 /develop/src/zmt/zmt backup
 	python3 /develop/src/zmt/zmt cleanup
+	python3 /develop/src/zmt/zmt scripts
 	@echo $$(ls /var/lib/zmt/autosnap)
 	python3 /develop/src/zmt/zmt stop --kill testdocker
 	python3 /develop/src/zmt/zmt start testdocker
