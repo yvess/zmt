@@ -38,7 +38,7 @@ def get_config_value(config, name, fs_name='', section='', defaults_fallback=Non
             return config[section][name]
     if name in config['defaults']:
         return config['defaults'][name]
-    elif defaults_fallback in config['defaults']:
+    elif defaults_fallback and defaults_fallback in config['defaults']:
         return config['defaults'][defaults_fallback]
     return None
 
