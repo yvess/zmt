@@ -367,6 +367,10 @@ class ZfsTools:
             return []
 
     def _host_is_up(self, host):
+        # ping is blocked
+        if host in self.config['defaults']:
+            if 'ping_blocked' in self.config['defaults'][host].split(','):
+                return True
         # check if host mirror is reachable
         cmd = 'ping -W 1000 -c 1 %s' % host
         ping_exitcode, ping_output = subprocess.getstatusoutput(cmd)
