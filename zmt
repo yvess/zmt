@@ -14,11 +14,12 @@ from datetime import datetime
 from collections import OrderedDict
 import asyncio
 from asyncio.subprocess import PIPE
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 AUTOSNAP_DATECMD = 'date +%Y-%m-%d_%H:%M:%STZ%z'
 MAX_AUTOSNAP_NR = 4
 LOCK_FILE = '/var/lib/zmt/%s.lock'
-
 
 def split_list(long_list, size):
     lists = []
