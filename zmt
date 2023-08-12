@@ -969,12 +969,13 @@ does't exists on the target remote filesystem""" % last_inc)
     def cleanup(self):
         for fs in self.fsmanager.fs:
             # normal backup snaps
-            backupsnaps = self._list_snaps(fs.zfs_backup, fs.name, host=fs.zfs_backup_host)
-            if len(backupsnaps) > fs.backupsnaps_keep:
-                self._destroy_snaps(backupsnaps, fs.backupsnaps_keep)
+            if self.args.do_backup_destroy:
+                backupsnaps = self._list_snaps(fs.zfs_backup, fs.name, host=fs.zfs_backup_host)
+                if len(backupsnaps) > fs.backupsnaps_keep:
+                    self._destroy_snaps(backupsnaps, fs.backupsnaps_keep)
 
             # normal autosnaps
-            if self.args.tank_destroy:
+            if self.args.do_tank_destroy:
                 autosnaps = self._list_snaps(fs.zfs_main, fs.name)
                 newest_backupsnap = backupsnaps[0].partition('@')[-1]
                 keep_autosnaps = [s.partition('@')[-1] for s in autosnaps[:fs.autosnaps_keep]]
@@ -1304,8 +1305,12 @@ class ZfsParser:
             default='', help='dry-run'
         )
         parser.add_argument(
-            '--no-tank-destroy', dest='tank_destroy', action='store_false',
-            default=True, help="only delete backup snapshos, don't touch tank"
+            '--no-tank-destroy', dest='do_tank_destroy', action='store_false',
+            default=True, help="don't delete outdated tank snapshot"
+        )
+        parser.add_argument(
+            '--no-backup-destroy', dest='do_backup_destroy', action='store_false',
+            default=True, help="don't delete outdated backup snapshot"
         )
         parser.set_defaults(command='cleanup')
 
