@@ -969,8 +969,8 @@ does't exists on the target remote filesystem""" % last_inc)
     def cleanup(self):
         for fs in self.fsmanager.fs:
             # normal backup snaps
+            backupsnaps = self._list_snaps(fs.zfs_backup, fs.name, host=fs.zfs_backup_host)
             if self.args.do_backup_destroy:
-                backupsnaps = self._list_snaps(fs.zfs_backup, fs.name, host=fs.zfs_backup_host)
                 if len(backupsnaps) > fs.backupsnaps_keep:
                     self._destroy_snaps(backupsnaps, fs.backupsnaps_keep)
 
