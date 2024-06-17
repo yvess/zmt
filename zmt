@@ -912,7 +912,7 @@ does't exists on the target remote filesystem""" % last_inc)
                             parameters.snap_dest_root, snap_name
                         ))
                 else:
-                    if snap_type == 'backup':
+                    if snap_type == 'backup' and self.args.verbose:
                         print("no newer snapshot to backup for %s" % snap_src_root)
 
             if transfer_done:
