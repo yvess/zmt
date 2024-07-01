@@ -928,6 +928,10 @@ does't exists on the target remote filesystem""" % last_inc)
 
         if self.args.items:
             fs_to_backup = self.fsmanager.all_to_fs(self.args.items)
+        elif self.args.only_backup_with_autosnap:
+            self._update_running()
+            self._check_running()
+            fs_to_backup = self.running
         else:
             # proccess all managed fs from zmt.ini
             fs_to_backup = self.fsmanager.fs
@@ -1287,6 +1291,10 @@ class ZfsParser:
         parser.add_argument(
             '-s', '--snap-name', dest='backup_snap_name', action='store',
             default='', help=''
+        )
+        parser.add_argument(
+            '-a', '--with-autosnap-only', dest='only_backup_with_autosnap', action='store_true',
+            default=False, help='only create backups of containers with autosnaps'
         )
         parser.add_argument('items', nargs='*', default=None)
         parser.set_defaults(command='backup')
