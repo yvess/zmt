@@ -974,9 +974,10 @@ does't exists on the target remote filesystem""" % last_inc)
         for fs in self.fsmanager.fs:
             # normal backup snaps
             backupsnaps = self._list_snaps(fs.zfs_backup, fs.name, host=fs.zfs_backup_host)
-            if self.args.do_backup_destroy:
-                if len(backupsnaps) > fs.backupsnaps_keep:
-                    self._destroy_snaps(backupsnaps, fs.backupsnaps_keep)
+            if self.args.do_backup_cleanup:
+                if self.args.do_backup_destroy:
+                    if len(backupsnaps) > fs.backupsnaps_keep:
+                        self._destroy_snaps(backupsnaps, fs.backupsnaps_keep)
 
             # normal autosnaps
             if self.args.do_tank_destroy:
@@ -1311,6 +1312,10 @@ class ZfsParser:
         parser.add_argument(
             '-n', dest='dry_run', const=' -n ', action='store_const',
             default='', help='dry-run'
+        )
+        parser.add_argument(
+            '-b', '--backup', dest='do_backup_cleanup', action='store_true',
+            default=False, help="cleanup backup items"
         )
         parser.add_argument(
             '--no-tank-destroy', dest='do_tank_destroy', action='store_false',
