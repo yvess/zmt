@@ -106,7 +106,7 @@ class Filesystem:
         self.options = {}
         if "%s_items" % kind in config and name in config["%s_items" % kind]:
             options_str = config["%s_items" % kind][name]
-            if kind in ['vm', 'container'] and ':' in options_str:
+            if kind in ['vm', 'container', 'swarm'] and ':' in options_str:
                 self.options = self._extract_options(options_str)
         self.host_mirror = config[kind]['host_mirror'] if 'host_mirror' in config[kind] else None
         self.autosnaps_keep = int(get_config_value(config, 'autosnaps_keep', self.name, section=kind))
@@ -253,13 +253,16 @@ class Filesystem:
 
 class FilesystemManager:
     def __init__(self, config=None, kind='all'):
-        self.containers, self.vms, self.rsync, self.scripts, self.plain_items = [], [], [], [], []
-        self.managed_containers, self.managed_vms, self.managed_plain_items = [], [], []
+        self.containers, self.swarm, self.vms, self.rsync, self.scripts, self.plain_items = [], [], [], [], [], []
+        self.managed_containers, self.managed_swarm, self.managed_vms, self.managed_plain_items = [], [], [], []
         self.config = config
         if config:
-            if 'container' in config and 'container_items' in config and kind in ['all', 'container']:
+            if 'container' in config and 'container_items' in config and kind in ['all', 'container', 'swarm']:
                 self.managed_containers = [name for name, options in self.config.items('container_items')]
                 self.containers = self.all_to_fs(self.managed_containers)
+            if 'swarm' in config and 'swarm_items' in config and kind in ['all', 'container', 'swarm']:
+                self.managed_swarm = [name for name, options in self.config.items('swarm_items')]
+                self.swarm = self.all_to_fs(self.managed_swarm)
             if 'vm' in config and 'vm_items' in config and kind in ['all', 'vm']:
                 self.managed_vms =  [name for name, options in self.config.items('vm_items')]
                 self.vms = self.all_to_fs(self.managed_vms)
@@ -282,15 +285,17 @@ class FilesystemManager:
         for item in items:
             if item in self.managed_vms and item in self.managed_containers:
                 raise RuntimeError(
-                    "The item name is ambiguous. Please be more specific with @vm, @container or @plain"
+                    "The item name is ambiguous. Please be more specific with @vm, @container, @swarm or @plain"
                 )
-            if item.partition('@')[-1] in ['vm', 'container', 'plain']:
+            if item.partition('@')[-1] in ['vm', 'container', 'swarm', 'plain']:
                 name, kind = item.split('@')
             else:
                 if item in self.managed_vms:
                     kind = 'vm'
                 elif item in self.managed_containers:
                     kind = 'container'
+                elif item in self.managed_swarm:
+                    kind = 'swarm'
                 elif item in self.managed_plain_items:
                     kind = 'plain'
                 name = item
@@ -322,7 +327,7 @@ class ZfsTools:
     def _item_to_fs(self):
         item = self.args.item
         if not item:
-            print('No vm/container/plain specified')
+            print('No vm/container/swarm/plain specified')
             exit(1)
         try:
             if not isinstance(item, (list, tuple)):
@@ -337,6 +342,8 @@ class ZfsTools:
         tasks = []
         if self.fsmanager.managed_vms:
             tasks.append(self._running_vms())
+        if self.fsmanager.managed_swarm:
+            tasks.append(self._running_swarm())
         if self.fsmanager.managed_containers:
             tasks.append(self._running_containers())
         return tasks
@@ -355,11 +362,21 @@ class ZfsTools:
             running_vms, self.fsmanager.managed_vms, kind='vm'
         )
 
+    async def _running_swarm(self):
+        returncode, has_running_swarm = await self.cmd.output('docker ps -q', run_async=True)
+        if has_running_swarm:
+            cmd = 'docker stack ls --format "{{.Name}}"'
+            returncode, running_swarm = await self.cmd.output(cmd, run_async=True, shell=True)
+            return self._make_running_list(
+                running_swarm, self.fsmanager.managed_swarm, kind='swarm'
+            )
+        else:
+            return []
+
     async def _running_containers(self):
         returncode, has_running_containers = await self.cmd.output('docker ps -q', run_async=True)
         if has_running_containers:
-            cmd = 'docker ps -q|xargs docker inspect --format "{{.Name}}"|' + \
-                  'grep -oP "(?<=^/)[a-zA-Z0-9]*(?=_.*)"|sort|uniq'
+            cmd = 'docker ps --format "{{.Names}}" | grep -oP "[a-zA-Z0-9]*(?=_.*)" | sort | uniq'
             returncode, running_containers = await self.cmd.output(cmd, run_async=True, shell=True)
             return self._make_running_list(
                 running_containers, self.fsmanager.managed_containers, kind='container'
@@ -489,6 +506,7 @@ class ZfsTools:
                 offsite_hosts.append(host)
         print('# config ')
         print('managed_containers: %s' % ", ".join(self.fsmanager.managed_containers))
+        print('managed_swarm: %s' % ", ".join(self.fsmanager.managed_swarm))
         print('managed_vms: %s' % ", ".join(self.fsmanager.managed_vms))
         print('managed_plain_items: %s' % ", ".join(self.fsmanager.managed_plain_items))
         print('offsite_hosts: %s' % ", ".join(offsite_hosts))
@@ -607,6 +625,8 @@ class ZfsTools:
         async def async_start(fs):
             if fs.kind == 'container':
                 await self._compose(fs, 'up -d', run_async=True)
+            if fs.kind == 'swarm':
+                await self._stack(fs, 'deploy', run_async=True)
             if fs.kind == 'vm':
                 await self._virsh(fs, 'start', run_async=True)
 
@@ -619,11 +639,14 @@ class ZfsTools:
         async def async_stop(fs):
             commands = {
                 'container': {'stop': 'stop', 'kill': 'kill'},
+                'swarm': {'rm': 'rm', 'rm': 'rm'},
                 'vm': {'stop': 'shutdown', 'kill': 'destroy'},
             }
             cmd = commands[fs.kind][self.args.cmd_stop]
             if fs.kind == 'container':
                 await self._compose(fs, cmd, run_async=True)
+            if fs.kind == 'swarm':
+                await self._stack(fs, cmd, run_async=True)
             if fs.kind == 'vm':
                 await self._virsh(fs, cmd, run_async=True)
 
@@ -711,6 +734,8 @@ does't exists on the target remote filesystem""" % last_inc)
         async def async_send_cleanup(fs):
             if fs.kind == 'container':
                 await self._compose(fs, 'rm -f', run_async=True)
+            elif fs.kind == 'swarm':
+                await self._stack(fs, 'rm', run_async=True)
             else:
                 await asyncio.sleep(0)
 
@@ -770,7 +795,19 @@ does't exists on the target remote filesystem""" % last_inc)
                 compose_file = 'docker-compose.yml'
             zfs_mountpoint = self._fs_mountpoint(fs)
             await self.cmd.call(
-                'docker-compose -f %s %s' % (compose_file, compose_cmd),
+                'docker compose -f %s %s' % (compose_file, compose_cmd),
+                cwd=zfs_mountpoint, run_async=run_async
+            )
+
+    async def _stack(self, fs, compose_cmd="stop", run_async=False):
+        if fs.kind == 'swarm':
+            if 'compose_file' in self.config['container']:
+                compose_file = self.config['container']['compose_file']
+            else:
+                compose_file = 'docker-compose.yml'
+            zfs_mountpoint = self._fs_mountpoint(fs)
+            await self.cmd.call(
+                'docker stack -f %s %s' % (compose_file, compose_cmd),
                 cwd=zfs_mountpoint, run_async=run_async
             )
 
@@ -1238,6 +1275,10 @@ class ZfsParser:
             default='', help='only move containers'
         )
         group.add_argument(
+            '--swarm', dest='kind', action='store_const', const='swarm',
+            default='', help='only move swarm containers'
+        )
+        group.add_argument(
             '--vm', dest='kind', action='store_const', const='vm',
             default='', help='only move vms (not implemented yet)'
         )
@@ -1406,6 +1447,10 @@ class ZfsParser:
         group.add_argument(
             '--container', dest='kind', action='store_const', const='container',
             default='all', help='only get container filesystems'
+        )
+        group.add_argument(
+            '--swarm', dest='kind', action='store_const', const='swarm',
+            default='all', help='only get swarm filesystems'
         )
         group.add_argument(
             '--vm', dest='kind', action='store_const', const='vm',
