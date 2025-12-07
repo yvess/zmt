@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
-# coding: utf-8
+#!/usr/bin/env python3.10
+# -*- coding: utf-8 -*-
 
 from collections import namedtuple
 import argparse
@@ -530,11 +530,11 @@ class ZfsTools:
                 host, dest_replace = entry
                 offsite_hosts.append(host)
         print('# config ')
-        print('managed_containers: %s' % ", ".join(self.fsmanager.managed_containers))
-        print('managed_swarm: %s' % ", ".join(self.fsmanager.managed_swarm))
-        print('managed_vms: %s' % ", ".join(self.fsmanager.managed_vms))
-        print('managed_plain_items: %s' % ", ".join(self.fsmanager.managed_plain_items))
-        print('offsite_hosts: %s' % ", ".join(offsite_hosts))
+        print(f'managed_containers: {", ".join(self.fsmanager.managed_containers)}')
+        print(f'managed_swarm: {", ".join(self.fsmanager.managed_swarm)}')
+        print(f'managed_vms: {", ".join(self.fsmanager.managed_vms)}')
+        print(f'managed_plain_items: {", ".join(self.fsmanager.managed_plain_items)}')
+        print(f'offsite_hosts: {", ".join(offsite_hosts)}')
         print()
         self._update_running()
 
@@ -648,12 +648,13 @@ class ZfsTools:
             self.loop_run(asyncio.wait(pre_tasks))
 
         async def async_start(fs):
-            if fs.kind == 'container':
-                await self._compose(fs, 'up -d', run_async=True)
-            if fs.kind == 'swarm':
-                await self._stack(fs, 'deploy', run_async=True)
-            if fs.kind == 'vm':
-                await self._virsh(fs, 'start', run_async=True)
+            match fs.kind:
+                case 'container':
+                    await self._compose(fs, 'up -d', run_async=True)
+                case 'swarm':
+                    await self._stack(fs, 'deploy', run_async=True)
+                case 'vm':
+                    await self._virsh(fs, 'start', run_async=True)
 
         tasks = []
         for fs in self._all_autosnap_fs():
@@ -662,18 +663,17 @@ class ZfsTools:
 
     def stop(self, all_fs=None):
         async def async_stop(fs):
-            commands = {
-                'container': {'stop': 'stop', 'kill': 'kill'},
-                'swarm': {'stop': 'rm', 'kill': 'rm'},
-                'vm': {'stop': 'shutdown', 'kill': 'destroy'},
-            }
-            cmd = commands[fs.kind][self.args.cmd_stop]
-            if fs.kind == 'container':
-                await self._compose(fs, cmd, run_async=True)
-            if fs.kind == 'swarm':
-                await self._stack(fs, cmd, run_async=True)
-            if fs.kind == 'vm':
-                await self._virsh(fs, cmd, run_async=True)
+            # Use Python 3.10+ match/case for cleaner command selection
+            match fs.kind:
+                case 'container':
+                    cmd = 'stop' if self.args.cmd_stop == 'stop' else 'kill'
+                    await self._compose(fs, cmd, run_async=True)
+                case 'swarm':
+                    cmd = 'rm'  # swarm always uses rm for both stop and kill
+                    await self._stack(fs, cmd, run_async=True)
+                case 'vm':
+                    cmd = 'shutdown' if self.args.cmd_stop == 'stop' else 'destroy'
+                    await self._virsh(fs, cmd, run_async=True)
 
         def check_swarm_stop_complete(all_fs):
             running_stacks = set(self.cmd.output('docker stack ls --format "{{.Name}}"', shell=True))
@@ -769,12 +769,13 @@ does't exists on the target remote filesystem""" % last_inc)
             return tasks
 
         async def async_send_cleanup(fs):
-            if fs.kind == 'container':
-                await self._compose(fs, 'rm -f', run_async=True)
-            elif fs.kind == 'swarm':
-                pass
-            else:
-                await asyncio.sleep(0)
+            match fs.kind:
+                case 'container':
+                    await self._compose(fs, 'rm -f', run_async=True)
+                case 'swarm':
+                    await self._stack(fs, 'rm', run_async=True)
+                case _:
+                    await asyncio.sleep(0)
 
         def async_activate_start(fs):
             tasks = []
@@ -832,7 +833,7 @@ does't exists on the target remote filesystem""" % last_inc)
                 compose_file = '-f docker-compose.yml'
             zfs_mountpoint = self._fs_mountpoint(fs)
             await self.cmd.call(
-                'docker compose %s %s' % (compose_file, compose_cmd),
+                f'docker compose {compose_file} {compose_cmd}',
                 cwd=zfs_mountpoint, run_async=run_async
             )
 
@@ -844,13 +845,13 @@ does't exists on the target remote filesystem""" % last_inc)
                 compose_file = 'docker-compose.yml'
             zfs_mountpoint = self._fs_mountpoint(fs)
             await self.cmd.call(
-                'docker stack %s %s -c %s' % (stack_cmd, fs.name, compose_file),
+                f'docker stack {stack_cmd} {fs.name} -c {compose_file}',
                 cwd=zfs_mountpoint, run_async=run_async
             )
 
     async def _virsh(self, fs, virsh_cmd="start", run_async=False):
         if fs.kind == 'vm':
-            await self.cmd.call('virsh %s %s' % (virsh_cmd, fs.name), run_async=run_async)
+            await self.cmd.call(f'virsh {virsh_cmd} {fs.name}', run_async=run_async)
 
     def _backup_snap_names(self, snap_names):
         backup_snap_names = OrderedDict()
