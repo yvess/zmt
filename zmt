@@ -114,8 +114,9 @@ class Cmd:
 
 
 class Filesystem:
-    def __init__(self, name, kind='vm', config=None):
-        self.cmd = Cmd(self.args.verbose if hasattr(self, 'args') and 'verbose' in self.args else False)
+    def __init__(self, name, kind='vm', config=None, args=None):
+        verbose = args.verbose if args and hasattr(args, 'verbose') else False
+        self.cmd = Cmd(verbose)
         self.name, self.kind = name.strip(), kind
         self.zfs_main = config[kind]['zfs_main'] if 'zfs_main' in config[kind] else None
         self.zfs_backup = config[kind]['zfs_backup'] if 'zfs_backup' in config[kind] else None
@@ -234,40 +235,48 @@ class Filesystem:
         fs_all = self.cmd.output('zfs list -o name,mounted -H -r %s' % self.main_fs)
         return async_mount(fs_all, cmd_zfs=cmd_zfs, reverse=reverse)
 
-    def zfs_set_readonly_noautomount(self, cmd_zfs='zfs set readonly=on canmount=noauto %s'):
-        async def async_zfs_set_readonly_noautomount(items, cmd_zfs=cmd_zfs):
+    def zfs_set_readonly_noautomount(self, cmd_zfs='zfs set canmount=noauto readonly=on %s'):
+        def zfs_set_readonly_noautomount_inner(items, cmd_zfs=cmd_zfs):
             cmd = []
             for item in items:
                 fs = item.split('\t')[0]
                 cmd.append(cmd_zfs % fs)
-            await self.cmd.call(' && '.join(cmd), shell=True, run_async=True)
+            if cmd:  # Only execute if there are commands
+                full_cmd = ' && '.join(cmd)
+                if self.cmd.verbose:
+                    print(f'Executing ZFS readonly/noautomount commands: {full_cmd}')
+                self.cmd.call(full_cmd, shell=True, run_async=False)
 
         fs_all = self.cmd.output('zfs list -o name,mounted,canmount -H -r %s' % self.main_fs)
-        return async_zfs_set_readonly_noautomount(fs_all, cmd_zfs=cmd_zfs)
+        return zfs_set_readonly_noautomount_inner(fs_all, cmd_zfs=cmd_zfs)
 
-    def zfs_set_write_automount(self, cmd_zfs='zfs set readonly=off canmount=on %s'):
-        async def async_zfs_set_write_automount(items, cmd_zfs=cmd_zfs):
+    def zfs_set_write_automount(self, cmd_zfs='zfs set canmount=on readonly=off %s'):
+        def zfs_set_write_automount_inner(items, cmd_zfs=cmd_zfs):
             cmd = []
             for item in items:
                 fs = item.split('\t')[0]
                 cmd.append(cmd_zfs % fs)
-            await self.cmd.call(' && '.join(cmd), shell=True, run_async=True)
+            if cmd:  # Only execute if there are commands
+                full_cmd = ' && '.join(cmd)
+                if self.cmd.verbose:
+                    print(f'Executing ZFS write/automount commands: {full_cmd}')
+                self.cmd.call(full_cmd, shell=True, run_async=False)
 
         fs_all = self.cmd.output('zfs list -o name,mounted,canmount -H -r %s' % self.main_fs)
-        return async_zfs_set_write_automount(fs_all, cmd_zfs=cmd_zfs)
+        return zfs_set_write_automount_inner(fs_all, cmd_zfs=cmd_zfs)
 
 
     def mount(self):
         loop = asyncio.get_event_loop()
         loop.run_until_complete(self.mount_task())
-        loop.run_until_complete(self.zfs_set_write_automount())
         loop.close()
+        self.zfs_set_write_automount()
 
     def umount(self):
         loop = asyncio.get_event_loop()
         loop.run_until_complete(self.mount_task(cmd_zfs='zfs umount %s', reverse=True))
-        loop.run_until_complete(self.zfs_set_readonly_noautomount())
         loop.close()
+        self.zfs_set_readonly_noautomount()
 
     def __str__(self):
         return self.longname
@@ -292,10 +301,11 @@ class Filesystem:
 
 
 class FilesystemManager:
-    def __init__(self, config=None, kind='all'):
+    def __init__(self, config=None, kind='all', args=None):
         self.containers, self.swarm, self.vms, self.rsync, self.scripts, self.plain_items = [], [], [], [], [], []
         self.managed_containers, self.managed_swarm, self.managed_vms, self.managed_plain_items = [], [], [], []
         self.config = config
+        self.args = args
         if config:
             if 'container' in config and 'container_items' in config and kind in ['all', 'container', 'swarm']:
                 self.managed_containers = [name for name, options in self.config.items('container_items')]
@@ -312,11 +322,11 @@ class FilesystemManager:
             if 'rsync_items' in config and kind in ['all', 'rsync']:
                 for rsync_host in config.items('rsync_items'):
                     name, host_src = rsync_host
-                    self.rsync.append(Filesystem(name, kind='rsync', config=config))
+                    self.rsync.append(Filesystem(name, kind='rsync', config=config, args=self.args))
             if 'scripts_items' in config and kind in ['all', 'scripts']:
                 for item in config.items('scripts_items'):
                     name, script = item
-                    self.scripts.append(Filesystem(name, kind='scripts', config=config))
+                    self.scripts.append(Filesystem(name, kind='scripts', config=config, args=self.args))
             self.fs = self.vms + self.containers + self.swarm + self.plain_items
             self.fs_backup = self.vms + self.containers + self.swarm + self.rsync + self.scripts
 
@@ -339,7 +349,7 @@ class FilesystemManager:
                 elif item in self.managed_plain_items:
                     kind = 'plain'
                 name = item
-            kind_items.append(Filesystem(name, kind, self.config))
+            kind_items.append(Filesystem(name, kind, self.config, args=self.args))
         return kind_items
 
 
@@ -352,7 +362,7 @@ class ZfsTools:
         self.config = config
         self.running = []
         self.zmt_path = os.path.abspath(sys.argv[0])
-        self.fsmanager = FilesystemManager(config)
+        self.fsmanager = FilesystemManager(config, args=args)
 
     def close(self):
         self.loop.close()
@@ -390,7 +400,7 @@ class ZfsTools:
 
     def _make_running_list(self, items, managed_items, kind='vm'):
         running_items = [
-            Filesystem(item, kind, self.config)
+            Filesystem(item, kind, self.config, args=self.args)
             for item in items
             if item and item in managed_items
         ]
@@ -658,14 +668,14 @@ class ZfsTools:
         async def async_start(fs):
             match fs.kind:
                 case 'container':
-                    await fs.zfs_set_write_automount()
+                    fs.zfs_set_write_automount()
                     await self._compose(fs, 'up -d', run_async=True)
                 case 'swarm':
-                    await fs.zfs_set_write_automount()
+                    fs.zfs_set_write_automount()
                     await self._node_label(fs, 'enable', host=self.config['swarm']['swarm_node'], run_async=True)
                     await self._stack(fs, 'deploy', run_async=True)
                 case 'vm':
-                    await fs.zfs_set_write_automount()
+                    fs.zfs_set_write_automount()
                     await self._virsh(fs, 'start', run_async=True)
 
         tasks = []
@@ -771,7 +781,7 @@ does't exists on the target remote filesystem""")
             tasks.append(async_umount(fs))
     
             async def async_readonly_noautomount(fs):
-                await fs.zfs_set_readonly_noautomount()
+                fs.zfs_set_readonly_noautomount()
             tasks.append(async_readonly_noautomount(fs))
 
             async def async_mirror_mount(fs):
@@ -1103,7 +1113,7 @@ does't exists on the target remote filesystem""")
             for entry in self.config.items('offsite_items'):
                 host, dest_replace = entry
                 offsite_config = self._offsite_config(host)
-                fsmanager = FilesystemManager(config=offsite_config)
+                fsmanager = FilesystemManager(config=offsite_config, args=None)
                 for fs in fsmanager.fs_backup:
                     offsitesnaps = self._list_snaps(self._set_dest(fs.zfs_backup, dest_replace=dest_replace), fs.name)
                     offsitesnaps_keep = int(get_config_value(
@@ -1227,7 +1237,7 @@ does't exists on the target remote filesystem""")
 
     def _offsite_single_host(self, host, offsite_config, dest_replace=None):
         failures = ''
-        fsmanager = FilesystemManager(config=offsite_config, kind=self.args.kind)
+        fsmanager = FilesystemManager(config=offsite_config, kind=self.args.kind, args=None)
         for fs in fsmanager.fs_backup:
             if fs.longname not in self.offsite_processed_fs:
                 failures += self._zfs_send_receive(
@@ -1349,12 +1359,20 @@ class ZfsParser:
             'item', nargs='?', default=None,
             help="without argument starts all container/vms"
         )
+        parser.add_argument(
+            '-v', dest='verbose', const='-v ', action='store_const',
+            default='', help='verbose'
+        )
         parser.set_defaults(command='start')
 
     def parser_autostart(self, subparsers):
         parser = self.subparsers.add_parser(
             'autostart',
             help='mount and start all activated containers/vms'
+        )
+        parser.add_argument(
+            '-v', dest='verbose', const='-v ', action='store_const',
+            default='', help='verbose'
         )
         parser.set_defaults(command='autostart')
 
@@ -1370,6 +1388,10 @@ class ZfsParser:
         parser.add_argument(
             '--kill', dest='cmd_stop', action='store_const', const='kill',
             default='stop', help='use kill instead of stop for shutdown'
+        )
+        parser.add_argument(
+            '-v', dest='verbose', const='-v ', action='store_const',
+            default='', help='verbose'
         )
         parser.set_defaults(command='stop')
 
