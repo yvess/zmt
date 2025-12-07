@@ -32,7 +32,7 @@ def split_list(long_list, size):
 
 def get_config_value(config, name, fs_name='', section='', defaults_fallback=None):
     if section and section in config:
-        section_fs_name = "{}_{}".format(name, fs_name)
+        section_fs_name = f"{name}_{fs_name}"
         if fs_name and section_fs_name in config[section]:
             return config[section][section_fs_name]
         elif name in config[section]:
@@ -45,6 +45,9 @@ def get_config_value(config, name, fs_name='', section='', defaults_fallback=Non
 
 
 class Cmd:
+    def __init__(self, verbose=False):
+        self.verbose = verbose
+
     def output(self, cmd, run_async=False, shell=False, split=True, cwd=None, **kwargs):
         # print('# cmd output:', cmd) # for debug
         if run_async:
@@ -53,8 +56,12 @@ class Cmd:
                     process = await asyncio.create_subprocess_shell(cmd, cwd=cwd, stdout=PIPE)
                 else:
                     cmd_list = [part for part in cmd.split(' ') if part]
+                    if self.verbose:
+                        print('Executing command:', ' '.join(cmd_list))
                     process = await asyncio.create_subprocess_exec(*cmd_list, cwd=cwd, stdout=PIPE)
                 output = await process.stdout.read()
+                if self.verbose:
+                    print('Command output:', output.decode('utf-8').strip())
                 returncode = await process.wait()
                 if returncode != 0:
                     print("something went wrong with the cmd:'%s' exit:%s" % (cmd, returncode))
@@ -63,9 +70,13 @@ class Cmd:
         else:
             if not shell:
                 cmd = [part for part in cmd.split(' ') if part]
+            if self.verbose:
+                print('Executing command:', ' '.join(cmd) if isinstance(cmd, list) else cmd)
             output = subprocess.check_output(
                 cmd, universal_newlines=True, shell=shell, cwd=cwd,
             )
+            if self.verbose:
+                print('Command output:', output.strip())
             if split:
                 output = output.strip()
                 return output.splitlines()
@@ -81,9 +92,13 @@ class Cmd:
                 else:
                     kwargs = {}
                 if shell:
+                    if self.verbose:
+                        print('Executing command:', cmd)
                     process = await asyncio.create_subprocess_shell(cmd, **kwargs)
                 else:
                     cmd_list = cmd.split(' ')
+                    if self.verbose:
+                        print('Executing command:', ' '.join(cmd_list))
                     process = await asyncio.create_subprocess_exec(*cmd_list, **kwargs)
                 returncode = await process.wait()
                 if check_returncode and returncode != 0:
@@ -93,12 +108,14 @@ class Cmd:
         else:
             if not shell:
                 cmd = cmd.split(' ')
+            if self.verbose:
+                print('Executing command:', ' '.join(cmd) if isinstance(cmd, list) else cmd)
             subprocess.check_call(cmd, universal_newlines=True, shell=shell, cwd=cwd)
 
 
 class Filesystem:
     def __init__(self, name, kind='vm', config=None):
-        self.cmd = Cmd()
+        self.cmd = Cmd(self.args.verbose if hasattr(self, 'args') and 'verbose' in self.args else False)
         self.name, self.kind = name.strip(), kind
         self.zfs_main = config[kind]['zfs_main'] if 'zfs_main' in config[kind] else None
         self.zfs_backup = config[kind]['zfs_backup'] if 'zfs_backup' in config[kind] else None
@@ -150,7 +167,7 @@ class Filesystem:
     @property
     def autosnap_local(self):
         zfs_cmd = 'list -r -t snap -d 1 -S creation -o name -H'
-        cmd = 'zfs {zfs_cmd} {fs.main_fs}|grep "autosnap-"|head -1'.format(zfs_cmd=zfs_cmd, fs=self)
+        cmd = f'zfs {zfs_cmd} {self.main_fs}|grep "autosnap-"|head -1'
         autosnap_name = self.cmd.output(cmd, shell=True)[0].partition('@')[-1]
         if not autosnap_name:
             print("the last snapshot needs to be a autosnap snapshot from zmt")
@@ -161,9 +178,7 @@ class Filesystem:
     def autosnap_mirror(self):
         if self.host_mirror:
             zfs_cmd = 'list -r -t snap -d 1 -S creation -o name -H'
-            cmd = 'ssh {fs.host_mirror} zfs {zfs_cmd} {fs.main_fs}|grep "autosnap-"|head -1'.format(
-                zfs_cmd=zfs_cmd, fs=self
-            )
+            cmd = f'ssh {self.host_mirror} zfs {zfs_cmd} {self.main_fs}|grep "autosnap-"|head -1'
             autosnap_name = self.cmd.output(cmd, shell=True)[0].partition('@')[-1]
             if not autosnap_name:
                 print("the last snapshot needs to be a autosnap snapshot from zmt")
@@ -219,39 +234,39 @@ class Filesystem:
         fs_all = self.cmd.output('zfs list -o name,mounted -H -r %s' % self.main_fs)
         return async_mount(fs_all, cmd_zfs=cmd_zfs, reverse=reverse)
 
-    def zfs_readonly_noautomount(self, cmd_zfs='zfs set readonly=on canmount=noauto %s'):
-        async def async_zfs_readonly_noautomount(items, cmd_zfs=cmd_zfs):
+    def zfs_set_readonly_noautomount(self, cmd_zfs='zfs set readonly=on canmount=noauto %s'):
+        async def async_zfs_set_readonly_noautomount(items, cmd_zfs=cmd_zfs):
             cmd = []
             for item in items:
-                fs, _ = item.split('\t')
+                fs = item.split('\t')[0]
                 cmd.append(cmd_zfs % fs)
             await self.cmd.call(' && '.join(cmd), shell=True, run_async=True)
 
         fs_all = self.cmd.output('zfs list -o name,mounted,canmount -H -r %s' % self.main_fs)
-        return async_zfs_readonly_noautomount(fs_all, cmd_zfs=cmd_zfs)
+        return async_zfs_set_readonly_noautomount(fs_all, cmd_zfs=cmd_zfs)
 
-    def zfs_write_automount(self, cmd_zfs='zfs set readonly=off canmount=on %s'):
-        async def async_zfs_write_automount(items, cmd_zfs=cmd_zfs):
+    def zfs_set_write_automount(self, cmd_zfs='zfs set readonly=off canmount=on %s'):
+        async def async_zfs_set_write_automount(items, cmd_zfs=cmd_zfs):
             cmd = []
             for item in items:
-                fs, _ = item.split('\t')
+                fs = item.split('\t')[0]
                 cmd.append(cmd_zfs % fs)
             await self.cmd.call(' && '.join(cmd), shell=True, run_async=True)
 
         fs_all = self.cmd.output('zfs list -o name,mounted,canmount -H -r %s' % self.main_fs)
-        return async_zfs_write_automount(fs_all, cmd_zfs=cmd_zfs)
+        return async_zfs_set_write_automount(fs_all, cmd_zfs=cmd_zfs)
 
 
     def mount(self):
         loop = asyncio.get_event_loop()
         loop.run_until_complete(self.mount_task())
-        loop.run_until_complete(self.zfs_write_automount())
+        loop.run_until_complete(self.zfs_set_write_automount())
         loop.close()
 
     def umount(self):
         loop = asyncio.get_event_loop()
         loop.run_until_complete(self.mount_task(cmd_zfs='zfs umount %s', reverse=True))
-        loop.run_until_complete(self.zfs_readonly_noautomount())
+        loop.run_until_complete(self.zfs_set_readonly_noautomount())
         loop.close()
 
     def __str__(self):
@@ -332,7 +347,7 @@ class ZfsTools:
     def __init__(self, args, config):
         self.loop = asyncio.get_event_loop()
         self.loop_run = self.loop.run_until_complete
-        self.cmd = Cmd()
+        self.cmd = Cmd(args.verbose if 'verbose' in args else False)
         self.args = args
         self.config = config
         self.running = []
@@ -464,9 +479,7 @@ class ZfsTools:
         tasks = []
         for fs in fs_to_snap:
             async def async_snap(fs, test=False, verbose=''):
-                cmd = 'zfs snap -r {zfs_main}/{fs}@{snap_name}'.format(
-                    zfs_main=fs.zfs_main, fs=fs.name, snap_name=snap_name
-                )
+                cmd = f'zfs snap -r {fs.zfs_main}/{fs.name}@{snap_name}'
                 if test or verbose:
                     print(cmd.replace('   ', ''))
                 if test:
@@ -495,11 +508,8 @@ class ZfsTools:
                     last_inc = fs.inc_from_file(snap_type='autosnap', inc_as_stream=True)
 
                     # send fs to host mirror
-                    cmd = 'zfs send -R {inc} {zfs_main}/{fs}@{snap_name}|\
-                           ssh {host_mirror} "zfs recv -u {zfs_main}/{fs}"'.format(
-                        zfs_main=fs.zfs_main, fs=fs.name, host_mirror=fs.host_mirror,
-                        inc=last_inc, snap_name=snap_name
-                    )
+                    cmd = f'zfs send -R {last_inc} {fs.zfs_main}/{fs.name}@{snap_name}|\
+                           ssh {fs.host_mirror} "zfs recv -u {fs.zfs_main}/{fs.name}"'
 
                     async def async_zfs_send(cmd, snap_name, fs):
                         returncode = await self.cmd.call(
@@ -546,13 +556,13 @@ class ZfsTools:
 
         for fs in fs_to_inspect:
             print(
-                '''{fs.name}@{fs.kind} host_mirror:{fs.host_mirror} zfs_main:{fs.zfs_main}
+                f'''{fs.name}@{fs.kind} host_mirror:{fs.host_mirror} zfs_main:{fs.zfs_main}
 - main fs:             {fs.main_fs}
 - backup fs:           {fs.backup_fs}
 - autosnap_from_file:  @{fs.autosnap_file}
 - autosnap_zfs_local:  @{fs.autosnap_local}
 - autosnap_zfs_mirror: @{fs.autosnap_mirror}
-- backup_from_file:    @{fs.backup_file}'''.format(fs=fs)
+- backup_from_file:    @{fs.backup_file}'''
             )
             if not fs.is_valid_autosnap():
                 print("ERROR: autosnaps don't match")
@@ -565,26 +575,24 @@ class ZfsTools:
         return zfs_mountpoint
 
     async def _zmt_mirror_exec(self, zmt_cmd, fs):
+        verbose_flag = ''
+        if self.args.verbose:
+            verbose_flag = ' -v'
+        cmd = f'ssh {fs.host_mirror} "{self.zmt_path} {zmt_cmd}{verbose_flag}"'
+        if self.args.verbose:
+            print('Executing remote command on mirror:', cmd)
         await self.cmd.call(
-            'ssh {host_mirror} "{script_path} {zmt_cmd}"'.format(
-                host_mirror=fs.host_mirror, script_path=self.zmt_path,
-                zmt_cmd=zmt_cmd
-            ), shell=True, run_async=True
+            cmd, shell=True, run_async=True
         )
 
     async def _zfs_exec(self, zfs_cmd, fs, extra=""):
-        await self.cmd.call(
-            'zfs {zfs_cmd} {fs_main_fs}'.format(
-                zfs_cmd=zfs_cmd, fs_main_fs=fs.main_fs, extra=extra
-            ), run_async=True
-        )
+        cmd = f'zfs {zfs_cmd} {fs.main_fs} {extra}'
+        await self.cmd.call(cmd, run_async=True)
 
     async def _zfs_mirror_exec(self, zfs_cmd, fs, extra=""):
         await self.cmd.call(
-            'ssh {host_mirror} "zfs {zfs_cmd} {fs_main_fs} {extra}"'.format(
-                host_mirror=fs.host_mirror, zfs_cmd=zfs_cmd,
-                fs_main_fs=fs.main_fs, extra=extra
-            ), shell=True, run_async=True
+            f'ssh {fs.host_mirror} "zfs {zfs_cmd} {fs.main_fs} {extra}"',
+            shell=True, run_async=True
         )
 
     def _update_running(self):
@@ -650,10 +658,14 @@ class ZfsTools:
         async def async_start(fs):
             match fs.kind:
                 case 'container':
+                    await fs.zfs_set_write_automount()
                     await self._compose(fs, 'up -d', run_async=True)
                 case 'swarm':
+                    await fs.zfs_set_write_automount()
+                    await self._node_label(fs, 'enable', host=self.config['swarm']['swarm_node'], run_async=True)
                     await self._stack(fs, 'deploy', run_async=True)
                 case 'vm':
+                    await fs.zfs_set_write_automount()
                     await self._virsh(fs, 'start', run_async=True)
 
         tasks = []
@@ -663,19 +675,21 @@ class ZfsTools:
 
     def stop(self, all_fs=None):
         async def async_stop(fs):
-            # Use Python 3.10+ match/case for cleaner command selection
             match fs.kind:
                 case 'container':
                     cmd = 'stop' if self.args.cmd_stop == 'stop' else 'kill'
                     await self._compose(fs, cmd, run_async=True)
                 case 'swarm':
                     cmd = 'rm'  # swarm always uses rm for both stop and kill
-                    await self._stack(fs, cmd, run_async=True)
+                    await self._stack(fs, cmd, run_async=True, read_compose_file=False)
+                    await self._node_label(fs, 'disable', host=self.config['swarm']['swarm_node'], run_async=True)
                 case 'vm':
                     cmd = 'shutdown' if self.args.cmd_stop == 'stop' else 'destroy'
                     await self._virsh(fs, cmd, run_async=True)
 
         def check_swarm_stop_complete(all_fs):
+            if self.fsmanager.managed_swarm == []:
+                return
             running_stacks = set(self.cmd.output('docker stack ls --format "{{.Name}}"', shell=True))
             all_swarm_to_stop = set([fs.name for fs in all_fs if fs.kind == 'swarm'])
             if len(all_swarm_to_stop - running_stacks) != len(all_swarm_to_stop):
@@ -683,6 +697,8 @@ class ZfsTools:
                 check_swarm_stop_complete(all_fs)
 
         def check_vm_stop_complete(all_fs):
+            if self.fsmanager.managed_vms == []:
+                return
             all_running_vms = set(self.cmd.output('virsh list --name'))
             all_vms_to_stop = set([fs.name for fs in all_fs if fs.kind == 'vm'])
             if len(all_vms_to_stop - all_running_vms) != len(all_vms_to_stop):
@@ -732,8 +748,8 @@ class ZfsTools:
                     'list -H -o name -r -d 1 -t snap', fs, extra='|grep -q %s' % last_inc
                 )
             except subprocess.CalledProcessError:
-                print("""stopping move, the previous autosnap (%s) \
-does't exists on the target remote filesystem""" % last_inc)
+                print(f"""stopping move, the previous autosnap ({last_inc}) \
+does't exists on the target remote filesystem""")
                 exit(1)
 
         async def async_check_in_use(fs):
@@ -755,7 +771,7 @@ does't exists on the target remote filesystem""" % last_inc)
             tasks.append(async_umount(fs))
     
             async def async_readonly_noautomount(fs):
-                await fs.zfs_readonly_noautomount()
+                await fs.zfs_set_readonly_noautomount()
             tasks.append(async_readonly_noautomount(fs))
 
             async def async_mirror_mount(fs):
@@ -773,7 +789,7 @@ does't exists on the target remote filesystem""" % last_inc)
                 case 'container':
                     await self._compose(fs, 'rm -f', run_async=True)
                 case 'swarm':
-                    await self._stack(fs, 'rm', run_async=True)
+                    pass
                 case _:
                     await asyncio.sleep(0)
 
@@ -837,17 +853,29 @@ does't exists on the target remote filesystem""" % last_inc)
                 cwd=zfs_mountpoint, run_async=run_async
             )
 
-    async def _stack(self, fs, stack_cmd="deploy", run_async=False):
+    async def _stack(self, fs, stack_cmd="deploy", run_async=False, read_compose_file=True):
         if fs.kind == 'swarm':
-            if 'compose_file' in self.config['container']:
-                compose_file = self.config['container']['compose_file']
+            if read_compose_file:
+                if 'compose_file' in self.config['swarm']:
+                    compose_file = f" {self.config['swarm']['compose_file']}"
+                else:
+                    compose_file = ' -c docker-compose.yml'
             else:
-                compose_file = 'docker-compose.yml'
+                compose_file = ''
             zfs_mountpoint = self._fs_mountpoint(fs)
             await self.cmd.call(
-                f'docker stack {stack_cmd} {fs.name} -c {compose_file}',
+                f'docker stack {stack_cmd}{compose_file} {fs.name}',
                 cwd=zfs_mountpoint, run_async=run_async
             )
+
+    async def _node_label(self, fs, node_cmd="enable", host='', run_async=False):
+        if fs.kind == 'swarm':
+            match node_cmd:
+                case 'enable':
+                    cmd = f"docker node update --label-add service-{fs.name}=YES {host}"
+                case 'disable':
+                    cmd = f"docker node update --label-add service-{fs.name}=NO {host}"
+            await self.cmd.call(cmd, run_async=run_async)
 
     async def _virsh(self, fs, virsh_cmd="start", run_async=False):
         if fs.kind == 'vm':
@@ -876,9 +904,9 @@ does't exists on the target remote filesystem""" % last_inc)
         _, _, snap_name = last_inc.partition('@')
         if snap_name:
             cmd_is_mounted, cmd_mount, cmd_diff = self._add_ssh_if_host(
-                'zfs get -H -o value mounted {}'.format(snap_dest_root),
-                'zfs mount {}'.format(snap_dest_root),
-                'zfs diff -H {}@{}'.format(snap_dest_root, snap_name),
+                f'zfs get -H -o value mounted {snap_dest_root}',
+                f'zfs mount {snap_dest_root}',
+                f'zfs diff -H {snap_dest_root}@{snap_name}',
                 host=dest_host
             )
             try:
@@ -890,21 +918,18 @@ does't exists on the target remote filesystem""" % last_inc)
                 else:
                     return False
             except subprocess.CalledProcessError:
-                print("someting went wrong with {}".format(cmd_diff))
+                print(f"someting went wrong with {cmd_diff}")
                 exit(1)
         return True
 
     def _src_snap_names(self, fs, fs_src, last_inc, src_host=None):
         if src_host:
-            cmd = 'ssh {src_host} "zfs list -H -S creation -r -o name -t snap {zfs_src_root}/{fs}"'.format(
-                src_host=src_host, zfs_src_root=getattr(fs, "zfs_%s" % fs_src),
-                fs=fs.name, inc=last_inc
-            )
+            zfs_src_root = getattr(fs, f"zfs_{fs_src}")
+            cmd = f'ssh {src_host} "zfs list -H -S creation -r -o name -t snap {zfs_src_root}/{fs.name}"'
             src_snap_names = self.cmd.output(cmd, shell=True)
         else:
-            cmd = 'zfs list -H -S creation -r -o name -t snap {zfs_src_root}/{fs}'.format(
-                zfs_src_root=getattr(fs, "zfs_%s" % fs_src), fs=fs.name, inc=last_inc
-            )
+            zfs_src_root = getattr(fs, f"zfs_{fs_src}")
+            cmd = f'zfs list -H -S creation -r -o name -t snap {zfs_src_root}/{fs.name}'
             src_snap_names = self.cmd.output(cmd)
         return src_snap_names
 
@@ -914,7 +939,7 @@ does't exists on the target remote filesystem""" % last_inc)
                 return args[0]
             return args
         commands = []
-        fallback_host_key = 'fallback_alias_{}'.format(host)
+        fallback_host_key = f'fallback_alias_{host}'
         is_up = self._host_is_up(host)
         if is_up:
             pass
@@ -924,9 +949,9 @@ does't exists on the target remote filesystem""" % last_inc)
             if is_up:
                 host = fallback_host
         if not is_up:
-            raise RuntimeError("No reachable host found, tried {}, {}".format(host, fallback_host))
+            raise RuntimeError(f"No reachable host found, tried {host}, {fallback_host}")
         for cmd in args:
-            commands.append('ssh {} "{}"'.format(host, cmd))
+            commands.append(f'ssh {host} "{cmd}"')
         if len(commands) == 1:
             return commands[0]
         return commands
@@ -962,30 +987,28 @@ does't exists on the target remote filesystem""" % last_inc)
                     )
                     if self.is_dest_not_changed(parameters.snap_dest_root, parameters.last_inc, dest_host=dest_host):
                         zfs_send = self._add_ssh_if_host(
-                            'zfs send {last_inc} {snap_src_root}@{snap_name}'.format(**parameters._asdict()),
+                            f'zfs send {parameters.last_inc} {parameters.snap_src_root}@{parameters.snap_name}',
                             host=src_host
                         )
                         zfs_recv = self._add_ssh_if_host(
-                            'zfs recv -u {snap_dest_root}'.format(**parameters._asdict()),
+                            f'zfs recv -u {parameters.snap_dest_root}',
                             host=dest_host
                         )
                         if self.args.test or self.args.verbose:
-                            print('{}|{}'.format(zfs_send, zfs_recv).replace('   ', ''))
+                            print(f'{zfs_send}|{zfs_recv}'.replace('   ', ''))
                         if not self.args.test:
                             if fs.backup_file:
                                 zfs_readonly = self._add_ssh_if_host(
-                                    'zfs set readonly=on {}'.format(parameters.snap_dest_root),
+                                    f'zfs set readonly=on {parameters.snap_dest_root}',
                                     host=dest_host
                                 )
                                 self.cmd.call(zfs_readonly, shell=True)
-                            self.cmd.call('{}|{}'.format(zfs_send, zfs_recv), shell=True)
+                            self.cmd.call(f'{zfs_send}|{zfs_recv}', shell=True)
                             transfer_done = True
                     else:
                         transfer_done = False
                         _, _, snap_name = last_inc.partition('@')
-                        print("can't receive snapshot destination was changed please rollback {}@{}".format(
-                            parameters.snap_dest_root, snap_name
-                        ))
+                        print(f"can't receive snapshot destination was changed please rollback {parameters.snap_dest_root}@{snap_name}")
                 else:
                     if snap_type == 'backup' and self.args.verbose:
                         print("no newer snapshot to backup for %s" % snap_src_root)
@@ -1022,19 +1045,15 @@ does't exists on the target remote filesystem""" % last_inc)
         self._remove_lock('backup')
 
     def _list_snaps(self, zfs_root, fs_name, host=None):
-        cmd = 'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_root}/{fs_name}|'
-        cmd = self._add_ssh_if_host((
-            cmd + 'grep "@autosnap-"').format(zfs_root=zfs_root, fs_name=fs_name
-        ), host=host)
+        cmd = f'zfs list -H -S creation -r -o name -t snap -d 1 {zfs_root}/{fs_name}|grep "@autosnap-"'
+        cmd = self._add_ssh_if_host(cmd, host=host)
         snaps = self.cmd.output(cmd, shell=True)
         return snaps
 
     def _destroy_snaps(self, snaps, snaps_keep):
         verbose, dry_run = self.args.verbose, self.args.dry_run
         for snap in snaps[snaps_keep:]:
-            cmd = 'zfs destroy{verbose}{dry_run} -r {snap}'.format(
-                verbose=verbose, dry_run=dry_run, snap=snap
-            )
+            cmd = f'zfs destroy{verbose}{dry_run} -r {snap}'
             snap_exitcode, snap_output = subprocess.getstatusoutput(cmd)
             if verbose:
                 print(snap_output)
@@ -1122,12 +1141,7 @@ does't exists on the target remote filesystem""" % last_inc)
                 if extra_options:
                     extra_options = extra_options.split('|')
                     extra_options.insert(0, '')  # space between options
-                cmd = 'rsync {dry_run}{verbose}{options}{excludes}{extra_options} {host_src} {dest}'
-                cmd = cmd.format(
-                    dry_run=dry_run, verbose=verbose, options=self.config['rsync']['cmd_options'],
-                    excludes=' '.join(excludes), extra_options=' '.join(extra_options),
-                    host_src=host_src, dest=dest
-                )
+                cmd = f'rsync {dry_run}{verbose}{self.config["rsync"]["cmd_options"]}{" ".join(excludes)}{" ".join(extra_options)} {host_src} {dest}'
                 # extract hostname
                 host_name = host_src.split(':')[0].split('@')[-1]
                 if verbose:
@@ -1141,10 +1155,7 @@ does't exists on the target remote filesystem""" % last_inc)
                     if current_failure_tries > 1:
                         try:
                             self.cmd.call(cmd)
-                            snap_cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(
-                                zfs_backup=self.config['rsync']['zfs_backup'],
-                                fs=fs, name=snap_name
-                            )
+                            snap_cmd = f'zfs snap -r {self.config["rsync"]["zfs_backup"]}/{fs}@{snap_name}'
                             if verbose:
                                 print("* zfs snap rsync with command:\n  %s" % snap_cmd)
                             if dry_run:
@@ -1179,16 +1190,11 @@ does't exists on the target remote filesystem""" % last_inc)
                 zfs_backup_host = get_config_value(self.config, 'zfs_backup_host', fs, section='scripts')
                 working_dir = None
                 if not zfs_backup_host:
-                    working_dir = self.cmd.output('zfs get mountpoint -o value -H {zfs_backup}/{fs}'.format(
-                        zfs_backup=zfs_backup, fs=fs
-                    ), split=False)
+                    working_dir = self.cmd.output(f'zfs get mountpoint -o value -H {zfs_backup}/{fs}', split=False)
                 output = self.cmd.output(script_cmd, cwd=working_dir)
                 if output:
                     outputs.append("\n\n%s:%s\n%s" % (fs, script_cmd, output))
-                snap_cmd = 'zfs snap -r {zfs_backup}/{fs}@{name}'.format(
-                    zfs_backup=zfs_backup,
-                    fs=fs, name=snap_name
-                )
+                snap_cmd = f'zfs snap -r {zfs_backup}/{fs}@{snap_name}'
                 snap_cmd = self._add_ssh_if_host(snap_cmd, host=zfs_backup_host)
                 if verbose:
                     print("* executing script:\n  %s" % script_cmd)
@@ -1283,6 +1289,10 @@ class ZfsParser:
             'activate',
             help='write latest autosnap to /var/lib/zmt/autosnap'
         )
+        parser.add_argument(
+            '-v', dest='verbose', const='-v ', action='store_const',
+            default='', help='verbose'
+        )
         parser.add_argument('item', nargs=1)
         parser.set_defaults(command='activate')
 
@@ -1290,6 +1300,10 @@ class ZfsParser:
         parser = self.subparsers.add_parser(
             'deactivate',
             help='remote latest autosnap file from /var/lib/zmt/autosnap'
+        )
+        parser.add_argument(
+            '-v', dest='verbose', const='-v ', action='store_const',
+            default='', help='verbose'
         )
         parser.add_argument('item', nargs=1)
         parser.set_defaults(command='deactivate')
@@ -1319,6 +1333,10 @@ class ZfsParser:
         group.add_argument(
             '--vm', dest='kind', action='store_const', const='vm',
             default='', help='only move vms (not implemented yet)'
+        )
+        parser.add_argument(
+            '-v', dest='verbose', const='-v ', action='store_const',
+            default='', help='verbose'
         )
         parser.set_defaults(command='move')
 
