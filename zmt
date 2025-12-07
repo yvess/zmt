@@ -219,14 +219,39 @@ class Filesystem:
         fs_all = self.cmd.output('zfs list -o name,mounted -H -r %s' % self.main_fs)
         return async_mount(fs_all, cmd_zfs=cmd_zfs, reverse=reverse)
 
+    def zfs_readonly_noautomount(self, cmd_zfs='zfs set readonly=on canmount=noauto %s'):
+        async def async_zfs_readonly_noautomount(items, cmd_zfs=cmd_zfs):
+            cmd = []
+            for item in items:
+                fs, _ = item.split('\t')
+                cmd.append(cmd_zfs % fs)
+            await self.cmd.call(' && '.join(cmd), shell=True, run_async=True)
+
+        fs_all = self.cmd.output('zfs list -o name,mounted,canmount -H -r %s' % self.main_fs)
+        return async_zfs_readonly_noautomount(fs_all, cmd_zfs=cmd_zfs)
+
+    def zfs_write_automount(self, cmd_zfs='zfs set readonly=off canmount=on %s'):
+        async def async_zfs_write_automount(items, cmd_zfs=cmd_zfs):
+            cmd = []
+            for item in items:
+                fs, _ = item.split('\t')
+                cmd.append(cmd_zfs % fs)
+            await self.cmd.call(' && '.join(cmd), shell=True, run_async=True)
+
+        fs_all = self.cmd.output('zfs list -o name,mounted,canmount -H -r %s' % self.main_fs)
+        return async_zfs_write_automount(fs_all, cmd_zfs=cmd_zfs)
+
+
     def mount(self):
         loop = asyncio.get_event_loop()
         loop.run_until_complete(self.mount_task())
+        loop.run_until_complete(self.zfs_write_automount())
         loop.close()
 
     def umount(self):
         loop = asyncio.get_event_loop()
         loop.run_until_complete(self.mount_task(cmd_zfs='zfs umount %s', reverse=True))
+        loop.run_until_complete(self.zfs_readonly_noautomount())
         loop.close()
 
     def __str__(self):
@@ -277,8 +302,8 @@ class FilesystemManager:
                 for item in config.items('scripts_items'):
                     name, script = item
                     self.scripts.append(Filesystem(name, kind='scripts', config=config))
-            self.fs = self.vms + self.containers + self.plain_items
-            self.fs_backup = self.vms + self.containers + self.rsync + self.scripts
+            self.fs = self.vms + self.containers + self.swarm + self.plain_items
+            self.fs_backup = self.vms + self.containers + self.swarm + self.rsync + self.scripts
 
     def all_to_fs(self, items):
         kind_items = []
@@ -639,7 +664,7 @@ class ZfsTools:
         async def async_stop(fs):
             commands = {
                 'container': {'stop': 'stop', 'kill': 'kill'},
-                'swarm': {'rm': 'rm', 'rm': 'rm'},
+                'swarm': {'stop': 'rm', 'kill': 'rm'},
                 'vm': {'stop': 'shutdown', 'kill': 'destroy'},
             }
             cmd = commands[fs.kind][self.args.cmd_stop]
@@ -649,6 +674,13 @@ class ZfsTools:
                 await self._stack(fs, cmd, run_async=True)
             if fs.kind == 'vm':
                 await self._virsh(fs, cmd, run_async=True)
+
+        def check_swarm_stop_complete(all_fs):
+            running_stacks = set(self.cmd.output('docker stack ls --format "{{.Name}}"', shell=True))
+            all_swarm_to_stop = set([fs.name for fs in all_fs if fs.kind == 'swarm'])
+            if len(all_swarm_to_stop - running_stacks) != len(all_swarm_to_stop):
+                time.sleep(0.5)
+                check_swarm_stop_complete(all_fs)
 
         def check_vm_stop_complete(all_fs):
             all_running_vms = set(self.cmd.output('virsh list --name'))
@@ -666,6 +698,7 @@ class ZfsTools:
         for fs in fs_to_stop:
             tasks.append(async_stop(fs))
         self.loop_run(asyncio.wait(tasks))
+        check_swarm_stop_complete(fs_to_stop)
         check_vm_stop_complete(fs_to_stop)
         post_tasks = []
         for fs in fs_to_stop:
@@ -720,6 +753,10 @@ does't exists on the target remote filesystem""" % last_inc)
             async def async_umount(fs):
                 await fs.mount_task(cmd_zfs='zfs umount %s', reverse=True)
             tasks.append(async_umount(fs))
+    
+            async def async_readonly_noautomount(fs):
+                await fs.zfs_readonly_noautomount()
+            tasks.append(async_readonly_noautomount(fs))
 
             async def async_mirror_mount(fs):
                 await self._zmt_mirror_exec('mount %s' % fs.name, fs)
@@ -735,7 +772,7 @@ does't exists on the target remote filesystem""" % last_inc)
             if fs.kind == 'container':
                 await self._compose(fs, 'rm -f', run_async=True)
             elif fs.kind == 'swarm':
-                await self._stack(fs, 'rm', run_async=True)
+                pass
             else:
                 await asyncio.sleep(0)
 
@@ -792,14 +829,14 @@ does't exists on the target remote filesystem""" % last_inc)
             if 'compose_file' in self.config['container']:
                 compose_file = self.config['container']['compose_file']
             else:
-                compose_file = 'docker-compose.yml'
+                compose_file = '-f docker-compose.yml'
             zfs_mountpoint = self._fs_mountpoint(fs)
             await self.cmd.call(
-                'docker compose -f %s %s' % (compose_file, compose_cmd),
+                'docker compose %s %s' % (compose_file, compose_cmd),
                 cwd=zfs_mountpoint, run_async=run_async
             )
 
-    async def _stack(self, fs, compose_cmd="stop", run_async=False):
+    async def _stack(self, fs, stack_cmd="deploy", run_async=False):
         if fs.kind == 'swarm':
             if 'compose_file' in self.config['container']:
                 compose_file = self.config['container']['compose_file']
@@ -807,7 +844,7 @@ does't exists on the target remote filesystem""" % last_inc)
                 compose_file = 'docker-compose.yml'
             zfs_mountpoint = self._fs_mountpoint(fs)
             await self.cmd.call(
-                'docker stack -f %s %s' % (compose_file, compose_cmd),
+                'docker stack %s %s -c %s' % (stack_cmd, fs.name, compose_file),
                 cwd=zfs_mountpoint, run_async=run_async
             )
 
