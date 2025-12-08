@@ -413,9 +413,9 @@ class ZfsTools:
         )
 
     async def _running_swarm(self):
-        returncode, has_running_swarm = await self.cmd.output('docker ps -q', run_async=True)
+        returncode, has_running_swarm = await self.cmd.output('docker node ps --format "{{.Name}}"', run_async=True)
         if has_running_swarm:
-            cmd = 'docker stack ls --format "{{.Name}}"'
+            cmd = 'docker node ps --filter "desired-state=running" --format="{{.Name}}"| cut -d "_" -f 1 | sort -u'
             returncode, running_swarm = await self.cmd.output(cmd, run_async=True, shell=True)
             return self._make_running_list(
                 running_swarm, self.fsmanager.managed_swarm, kind='swarm'
