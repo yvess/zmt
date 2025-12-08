@@ -766,7 +766,7 @@ does't exists on the target remote filesystem""")
             try:
                 # check for open files/dirs, would break unmount
                 await self.cmd.call(
-                    '! lsof -X -w|grep -q /%s/%s' % (fs.zfs_main, fs.name),
+                    '! fuser -m /%s/%s > /dev/null 2>&1' % (fs.zfs_main, fs.name),
                     shell=True, run_async=True, check_returncode=False
                 )
             except subprocess.CalledProcessError:
